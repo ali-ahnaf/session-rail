@@ -1,0 +1,14 @@
+src/**
+node_modules/**
+.vscode/**
+esbuild.js
+tsconfig.json
+.eslintrc.json
+**/*.map
+**/*.ts
+.git*
+docs/**
+scripts/**
+.smoke.js
+.regcheck.js
+package-lock.json

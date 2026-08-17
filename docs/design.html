@@ -1,0 +1,925 @@
+<title>Session Rail</title>
+<style>
+  /* ── page tokens: theme-aware ───────────────────────────────── */
+  :root {
+    --page-bg: #f6f7f6;
+    --page-panel: #ffffff;
+    --page-edge: #dfe3e1;
+    --page-text: #1a1e1c;
+    --page-muted: #616a66;
+    --page-faint: #8d9793;
+    --page-accent: #14794a;
+    --page-accent-soft: #e2f0e8;
+    --page-code-bg: #eef1ef;
+
+    --ui: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+
+    --r: 6px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --page-bg: #131615;
+      --page-panel: #1b1f1d;
+      --page-edge: #2c322f;
+      --page-text: #e8ebe9;
+      --page-muted: #97a19c;
+      --page-faint: #6f7a75;
+      --page-accent: #4ecb8c;
+      --page-accent-soft: #1c2b23;
+      --page-code-bg: #212623;
+    }
+  }
+  :root[data-theme="dark"] {
+    --page-bg: #131615;
+    --page-panel: #1b1f1d;
+    --page-edge: #2c322f;
+    --page-text: #e8ebe9;
+    --page-muted: #97a19c;
+    --page-faint: #6f7a75;
+    --page-accent: #4ecb8c;
+    --page-accent-soft: #1c2b23;
+    --page-code-bg: #212623;
+  }
+
+  /* ── ide tokens: deliberately fixed dark (this is a screenshot
+        of dark IDE chrome; it must not flip with the host theme) ── */
+  .ide {
+    --bg: #1b1d1e;
+    --bg-raise: #232627;
+    --bg-hover: #262a2b;
+    --edge: #34383a;
+    --edge-soft: #2a2e2f;
+    --fg: #e6e9e8;
+    --fg-dim: #b9c1be;
+    --fg-mute: #8b9391;
+    --fg-faint: #6a7370;
+    --live: #2fbf71;
+    --work: #d9a343;
+    --stop: #d1596b;
+    --idle: #6a7370;
+    --sel-ring: #4a5052;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--page-bg);
+    color: var(--page-text);
+    font-family: var(--ui);
+    font-size: 15px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 56px 28px 120px;
+  }
+
+  /* ── masthead ───────────────────────────────────────────────── */
+  .mast { border-bottom: 1px solid var(--page-edge); padding-bottom: 28px; margin-bottom: 40px; }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--page-faint);
+    margin: 0 0 14px;
+  }
+  h1 {
+    font-family: var(--mono);
+    font-size: clamp(30px, 5vw, 46px);
+    line-height: 1.05;
+    letter-spacing: -.035em;
+    font-weight: 600;
+    margin: 0 0 16px;
+    text-wrap: balance;
+  }
+  .lede { font-size: 17px; color: var(--page-muted); max-width: 62ch; margin: 0; }
+  .meta {
+    display: flex; flex-wrap: wrap; gap: 8px;
+    margin-top: 22px;
+    font-family: var(--mono); font-size: 11.5px;
+  }
+  .tag {
+    border: 1px solid var(--page-edge);
+    background: var(--page-panel);
+    color: var(--page-muted);
+    padding: 3px 9px; border-radius: 100px;
+  }
+  .tag.on { border-color: transparent; background: var(--page-accent-soft); color: var(--page-accent); }
+
+  /* ── two-column shell ───────────────────────────────────────── */
+  .shell { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 44px; align-items: start; }
+  @media (max-width: 900px) { .shell { grid-template-columns: minmax(0,1fr); gap: 40px; } }
+
+  .rail-col { position: sticky; top: 32px; }
+  @media (max-width: 900px) { .rail-col { position: static; } }
+
+  .frame-cap {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--page-faint);
+    margin: 0 0 10px;
+  }
+  .frame-note { font-size: 12.5px; color: var(--page-faint); margin: 12px 0 0; line-height: 1.5; }
+
+  /* ══════════════════════════════════════════════════════════════
+     THE SIDEBAR PROTOTYPE
+     ══════════════════════════════════════════════════════════════ */
+  .ide {
+    width: 300px;
+    background: var(--bg);
+    color: var(--fg);
+    border: 1px solid var(--edge);
+    border-radius: 8px;
+    overflow: hidden;
+    font-family: var(--ui);
+    font-size: 13px;
+    box-shadow: 0 18px 44px -18px rgba(0,0,0,.55);
+    user-select: none;
+  }
+  @media (max-width: 900px) { .ide { max-width: 100%; } }
+
+  .panel-head {
+    display: flex; align-items: center; gap: 8px;
+    padding: 12px 12px 12px 14px;
+  }
+  .panel-title {
+    font-size: 11.5px; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--fg-mute); font-weight: 600; flex: 1;
+  }
+  .hbtn {
+    display: grid; place-items: center;
+    width: 24px; height: 24px; padding: 0;
+    background: none; border: 0; border-radius: 4px;
+    color: var(--fg-dim); cursor: pointer;
+  }
+  .hbtn:hover { background: var(--bg-hover); color: var(--fg); }
+  .hbtn:focus-visible { outline: 2px solid var(--live); outline-offset: 1px; }
+
+  .tree { list-style: none; margin: 0; padding: 0 8px 14px; }
+  .tree ul { list-style: none; margin: 0; padding: 0; }
+
+  /* rows */
+  .row {
+    display: flex; align-items: center; gap: 7px;
+    border-radius: var(--r);
+    padding: 3px 6px;
+    cursor: pointer;
+    position: relative;
+  }
+  .row:hover { background: var(--bg-hover); }
+  .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sp { flex: 1 1 auto; }
+
+  /* project row — folder icon + bold name */
+  .r-proj { padding: 6px 6px; margin-top: 6px; }
+  .r-proj .name { font-weight: 650; font-size: 14.5px; letter-spacing: -.01em; }
+  .chev { color: var(--fg-faint); flex: none; transition: transform .13s ease; }
+  .node[data-open] > .row > .chev { transform: rotate(90deg); }
+  @media (prefers-reduced-motion: reduce) { .chev { transition: none; } }
+  .ficon { color: var(--fg-mute); flex: none; }
+  .avatar { width: 17px; height: 17px; border-radius: 3px; flex: none; object-fit: cover; }
+
+  /* session block — 2 lines, matching the reference */
+  .kids { padding-left: 14px; }
+  .node:not([data-open]) > .kids { display: none; }
+
+  .sess-block {
+    border-radius: 7px;
+    border: 1px solid transparent;
+    padding: 2px 0 4px;
+    margin: 6px 0 2px;
+  }
+  .sess-block.sel { border-color: var(--sel-ring); background: rgba(255,255,255,.022); }
+
+  .r-sess .name { font-size: 14px; font-weight: 500; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--idle); }
+  .dot.live { background: var(--live); }
+  .dot.work { background: var(--work); }
+  .dot.stop { background: var(--stop); }
+  .dot.live, .dot.work { animation: breathe 2.4s ease-in-out infinite; }
+  @keyframes breathe { 0%,100% { opacity: 1; } 50% { opacity: .42; } }
+  @media (prefers-reduced-motion: reduce) { .dot { animation: none !important; } }
+
+  .pill {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .02em;
+    color: var(--fg-mute);
+    border: 1px solid var(--edge);
+    border-radius: 100px;
+    padding: 1px 7px 2px;
+    flex: none;
+  }
+  .pill.hot { color: var(--live); border-color: rgba(47,191,113,.42); }
+
+  .subline {
+    display: flex; align-items: center; gap: 7px;
+    padding: 0 6px 0 28px;
+    font-family: var(--mono); font-size: 11.5px; color: var(--fg-faint);
+  }
+  .subline .txt { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .act {
+    display: grid; place-items: center;
+    width: 20px; height: 20px; padding: 0; flex: none;
+    background: none; border: 0; border-radius: 4px;
+    color: var(--fg-mute); cursor: pointer;
+  }
+  .act:hover { background: var(--bg-raise); color: var(--fg); }
+  .act.g { color: var(--live); }
+  .act:focus-visible { outline: 2px solid var(--live); outline-offset: 1px; }
+
+  /* depth rails for subagents / tasks */
+  .deep { padding-left: 27px; position: relative; }
+  .deep::before {
+    content: ""; position: absolute;
+    left: 13px; top: 0; bottom: 4px;
+    width: 1px; background: var(--edge-soft);
+  }
+  .r-agent { padding: 3px 6px; }
+  .r-agent .name { font-size: 12.5px; color: var(--fg-dim); }
+  .r-agent .kind {
+    font-family: var(--mono); font-size: 10.5px; color: var(--fg-faint);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .aicon { color: var(--fg-faint); flex: none; }
+  .r-task { padding: 2px 6px; }
+  .r-task .name { font-size: 12.5px; color: var(--fg-mute); }
+  .r-task.done .name { color: var(--fg-faint); text-decoration: line-through; text-decoration-color: var(--fg-faint); }
+  .r-task .box { color: var(--fg-faint); flex: none; }
+  .r-task.doing .box { color: var(--work); }
+  .r-task.done .box { color: var(--live); }
+
+  .empty { padding: 8px 6px 8px 28px; font-size: 12px; color: var(--fg-faint); font-style: italic; }
+
+  /* ── spec column ────────────────────────────────────────────── */
+  section { margin-bottom: 56px; scroll-margin-top: 24px; }
+  h2 {
+    font-family: var(--mono);
+    font-size: 13px; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--page-accent);
+    margin: 0 0 6px; font-weight: 600;
+  }
+  h2 .num { color: var(--page-faint); margin-right: 10px; }
+  .h2sub { font-size: 21px; letter-spacing: -.02em; font-weight: 600; margin: 0 0 18px; text-wrap: balance; }
+  h3 { font-size: 15px; margin: 26px 0 8px; letter-spacing: -.01em; }
+  p { margin: 0 0 14px; max-width: 68ch; }
+  p.tight { margin-bottom: 8px; }
+  .card {
+    background: var(--page-panel);
+    border: 1px solid var(--page-edge);
+    border-radius: 10px;
+    padding: 20px 22px;
+  }
+  .card + .card { margin-top: 14px; }
+
+  ul.plain { margin: 0 0 14px; padding-left: 20px; max-width: 68ch; }
+  ul.plain li { margin-bottom: 7px; }
+  code {
+    font-family: var(--mono); font-size: .875em;
+    background: var(--page-code-bg);
+    padding: 1.5px 5px; border-radius: 4px;
+  }
+  pre {
+    font-family: var(--mono); font-size: 12.5px; line-height: 1.65;
+    background: var(--page-code-bg);
+    border: 1px solid var(--page-edge);
+    border-radius: 8px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    margin: 0 0 14px;
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+
+  .tbl-scroll { overflow-x: auto; margin: 0 0 14px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; min-width: 520px; }
+  th, td { text-align: left; padding: 9px 14px 9px 0; border-bottom: 1px solid var(--page-edge); vertical-align: top; }
+  th {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .09em;
+    text-transform: uppercase; color: var(--page-faint); font-weight: 600;
+    border-bottom-color: var(--page-text);
+  }
+  td code { white-space: nowrap; }
+  .num-col { font-variant-numeric: tabular-nums; }
+
+  /* annotated anatomy */
+  .anat {
+    display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr);
+    gap: 22px; align-items: start;
+  }
+  @media (max-width: 700px) { .anat { grid-template-columns: minmax(0,1fr); } }
+  ol.calls { margin: 0; padding-left: 0; list-style: none; counter-reset: c; }
+  ol.calls li {
+    counter-increment: c;
+    display: grid; grid-template-columns: 22px minmax(0,1fr); gap: 10px;
+    padding: 9px 0; border-bottom: 1px solid var(--page-edge);
+    font-size: 13.5px;
+  }
+  ol.calls li::before {
+    content: counter(c);
+    font-family: var(--mono); font-size: 10.5px;
+    display: grid; place-items: center;
+    width: 20px; height: 20px; margin-top: 1px;
+    border-radius: 50%; border: 1px solid var(--page-edge);
+    color: var(--page-muted);
+  }
+  ol.calls b { font-weight: 600; }
+  ol.calls span { color: var(--page-muted); }
+
+  .marker {
+    display: inline-grid; place-items: center;
+    width: 17px; height: 17px; border-radius: 50%;
+    background: var(--page-accent); color: var(--page-bg);
+    font-family: var(--mono); font-size: 10px; font-weight: 700;
+    vertical-align: 1px; margin-right: 2px;
+  }
+
+  /* status-bar + toast mocks */
+  .statusbar {
+    display: flex; align-items: center; gap: 16px;
+    background: #1b1d1e; border: 1px solid #34383a; border-radius: 6px;
+    padding: 5px 12px; color: #b9c1be;
+    font-family: var(--ui); font-size: 12px;
+  }
+  .sb-item { display: flex; align-items: center; gap: 6px; }
+  .sb-item .dot { width: 7px; height: 7px; }
+
+  .menu {
+    width: 244px; background: #232627;
+    border: 1px solid #3a3f41; border-radius: 7px;
+    padding: 5px; color: #e6e9e8;
+    font-size: 13px;
+    box-shadow: 0 14px 34px -12px rgba(0,0,0,.6);
+  }
+  .mi { display: flex; align-items: center; gap: 10px; padding: 5px 9px; border-radius: 4px; }
+  .mi:hover { background: #2f3436; }
+  .mi.hl { background: #2f3436; }
+  .mi .k { margin-left: auto; font-family: var(--mono); font-size: 10.5px; color: #7d8785; }
+  .mi.danger { color: #e4818f; }
+  .msep { height: 1px; background: #3a3f41; margin: 5px 3px; }
+
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
+
+  .swatch { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+  .chip { width: 26px; height: 26px; border-radius: 5px; flex: none; border: 1px solid rgba(128,128,128,.28); }
+  .swatch code { font-size: 11.5px; }
+
+  .warn {
+    border-left: 2px solid var(--page-accent);
+    padding-left: 16px;
+    margin: 0 0 14px;
+    max-width: 68ch;
+  }
+  .warn p:last-child { margin-bottom: 0; }
+
+  footer {
+    border-top: 1px solid var(--page-edge);
+    margin-top: 20px; padding-top: 22px;
+    font-size: 13px; color: var(--page-faint); max-width: 68ch;
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="mast">
+    <p class="eyebrow">VS Code extension · design draft</p>
+    <h1>Session Rail</h1>
+    <p class="lede">
+      Every Claude Code session running on this machine, as one nested tree — projects at the
+      root, live sessions under them, spawned subagents under those, and each session's task list
+      at the leaves. Read-only first pass; click a row to focus its terminal.
+    </p>
+    <div class="meta">
+      <span class="tag on">Prototype below is interactive</span>
+      <span class="tag">Tree grammar from the reference panel</span>
+      <span class="tag">Data verified against ~/.claude</span>
+    </div>
+  </header>
+
+  <div class="shell">
+
+    <!-- ══════════ LEFT: the prototype ══════════ -->
+    <div class="rail-col">
+      <p class="frame-cap">Primary surface · 300px</p>
+
+      <div class="ide" id="rail">
+        <div class="panel-head">
+          <span class="panel-title">Sessions</span>
+          <button class="hbtn" title="Filter: live only" aria-label="Filter sessions">
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round">
+              <path d="M2 4.5h12M4.5 8h7M6.5 11.5h3"/>
+            </svg>
+          </button>
+          <button class="hbtn" title="Add project folder" aria-label="Add project folder">
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M2 12.5V4a.5.5 0 0 1 .5-.5h3.2l1.3 1.6h5.5a.5.5 0 0 1 .5.5v6.9a.5.5 0 0 1-.5.5h-10a.5.5 0 0 1-.5-.5Z"/>
+              <path d="M8 7.6v3.2M6.4 9.2h3.2"/>
+            </svg>
+          </button>
+          <button class="hbtn" title="New session" aria-label="New session">
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round">
+              <path d="M8 3v10M3 8h10"/>
+            </svg>
+          </button>
+        </div>
+
+        <ul class="tree">
+
+          <!-- ── goshift ─────────────────────────────── -->
+          <li class="node" data-open>
+            <div class="row r-proj" tabindex="0">
+              <svg class="chev" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 2.5 8 6l-3.5 3.5"/></svg>
+              <svg class="ficon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"><path d="M2 12.5V4a.5.5 0 0 1 .5-.5h3.2l1.3 1.6h5.5a.5.5 0 0 1 .5.5v6.9a.5.5 0 0 1-.5.5h-10a.5.5 0 0 1-.5-.5Z"/></svg>
+              <span class="name">goshift</span>
+              <span class="sp"></span>
+              <span class="pill">3</span>
+            </div>
+
+            <ul class="kids">
+              <!-- session: working, has subagents -->
+              <li class="node" data-open>
+                <div class="sess-block sel">
+                  <div class="row r-sess" tabindex="0">
+                    <svg class="chev" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 2.5 8 6l-3.5 3.5"/></svg>
+                    <span class="dot work"></span>
+                    <span class="name">goshift-d3</span>
+                    <span class="pill hot">focused</span>
+                  </div>
+                  <div class="subline">
+                    <span class="txt">master · opus 5 · <span class="num-col" data-clock="1042">17:22</span></span>
+                    <span class="sp"></span>
+                    <button class="act g" title="Focus terminal" aria-label="Focus terminal">
+                      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.4"/><path d="M4.6 6.4 6.4 8l-1.8 1.6M8.4 10h3"/></svg>
+                    </button>
+                  </div>
+
+                  <ul class="kids deep">
+                    <li class="node" data-open>
+                      <div class="row r-agent" tabindex="0">
+                        <svg class="chev" width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 2.5 8 6l-3.5 3.5"/></svg>
+                        <span class="dot work"></span>
+                        <span class="name">Explore</span>
+                        <span class="sp"></span>
+                        <span class="kind">d1</span>
+                      </div>
+                      <ul class="kids deep">
+                        <li>
+                          <div class="row r-agent" tabindex="0">
+                            <span style="width:11px;flex:none"></span>
+                            <span class="dot live"></span>
+                            <span class="name">Explore</span>
+                            <span class="sp"></span>
+                            <span class="kind">d2</span>
+                          </div>
+                        </li>
+                      </ul>
+                    </li>
+                    <li>
+                      <div class="row r-agent" tabindex="0">
+                        <span style="width:11px;flex:none"></span>
+                        <span class="dot"></span>
+                        <span class="name">cavecrew-investigator</span>
+                        <span class="sp"></span>
+                        <span class="kind">42s</span>
+                      </div>
+                    </li>
+                    <li>
+                      <div class="row r-task doing" tabindex="0">
+                        <span style="width:11px;flex:none"></span>
+                        <svg class="box" width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="7" cy="7" r="5.2"/><path d="M7 4.4v2.9l2 1.2" stroke-linecap="round"/></svg>
+                        <span class="name">Draft sidebar tree provider</span>
+                      </div>
+                    </li>
+                    <li>
+                      <div class="row r-task done" tabindex="0">
+                        <span style="width:11px;flex:none"></span>
+                        <svg class="box" width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.4 7.4l2.8 2.8L11.6 3.8"/></svg>
+                        <span class="name">Verify subagent linkage</span>
+                      </div>
+                    </li>
+                  </ul>
+                </div>
+              </li>
+
+              <!-- session: idle, no children -->
+              <li class="node">
+                <div class="sess-block">
+                  <div class="row r-sess" tabindex="0">
+                    <svg class="chev" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 2.5 8 6l-3.5 3.5"/></svg>
+                    <span class="dot live"></span>
+                    <span class="name">goshift-69</span>
+                  </div>
+                  <div class="subline">
+                    <span class="txt">master · idle 4m</span>
+                    <span class="sp"></span>
+                    <button class="act" title="Focus terminal" aria-label="Focus terminal">
+                      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.4"/><path d="M4.6 6.4 6.4 8l-1.8 1.6M8.4 10h3"/></svg>
+                    </button>
+                  </div>
+                </div>
+              </li>
+
+              <!-- session: exited -->
+              <li class="node">
+                <div class="sess-block">
+                  <div class="row r-sess" tabindex="0">
+                    <svg class="chev" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 2.5 8 6l-3.5 3.5"/></svg>
+                    <span class="dot stop"></span>
+                    <span class="name" style="color:var(--fg-mute)">goshift-56</span>
+                    <span class="pill">exited</span>
+                  </div>
+                  <div class="subline">
+                    <span class="txt">master · transcript kept</span>
+                    <span class="sp"></span>
+                    <button class="act" title="Open transcript" aria-label="Open transcript">
+                      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 2.5h6L12.5 5.5v8h-9Z"/><path d="M5.5 8h5M5.5 10.5h3"/></svg>
+                    </button>
+                  </div>
+                </div>
+              </li>
+            </ul>
+          </li>
+
+          <!-- ── sharebox-api ────────────────────────── -->
+          <li class="node" data-open>
+            <div class="row r-proj" tabindex="0">
+              <svg class="chev" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 2.5 8 6l-3.5 3.5"/></svg>
+              <svg class="ficon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"><path d="M2 12.5V4a.5.5 0 0 1 .5-.5h3.2l1.3 1.6h5.5a.5.5 0 0 1 .5.5v6.9a.5.5 0 0 1-.5.5h-10a.5.5 0 0 1-.5-.5Z"/></svg>
+              <span class="name">sharebox-api</span>
+              <span class="sp"></span>
+              <span class="pill">1</span>
+            </div>
+            <ul class="kids">
+              <li class="node">
+                <div class="sess-block">
+                  <div class="row r-sess" tabindex="0">
+                    <svg class="chev" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 2.5 8 6l-3.5 3.5"/></svg>
+                    <span class="dot live"></span>
+                    <span class="name">sharebox-api-4d</span>
+                  </div>
+                  <div class="subline">
+                    <span class="txt">feature/DEV-2969-v2</span>
+                    <span class="sp"></span>
+                    <button class="act" title="Focus terminal" aria-label="Focus terminal">
+                      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.4"/><path d="M4.6 6.4 6.4 8l-1.8 1.6M8.4 10h3"/></svg>
+                    </button>
+                  </div>
+                </div>
+              </li>
+            </ul>
+          </li>
+
+          <!-- ── sharebox-webadmin ───────────────────── -->
+          <li class="node" data-open>
+            <div class="row r-proj" tabindex="0">
+              <svg class="chev" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 2.5 8 6l-3.5 3.5"/></svg>
+              <svg class="ficon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"><path d="M2 12.5V4a.5.5 0 0 1 .5-.5h3.2l1.3 1.6h5.5a.5.5 0 0 1 .5.5v6.9a.5.5 0 0 1-.5.5h-10a.5.5 0 0 1-.5-.5Z"/></svg>
+              <span class="name">sharebox-webadmin</span>
+              <span class="sp"></span>
+              <span class="pill">1</span>
+            </div>
+            <ul class="kids">
+              <li class="node" data-open>
+                <div class="sess-block">
+                  <div class="row r-sess" tabindex="0">
+                    <svg class="chev" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 2.5 8 6l-3.5 3.5"/></svg>
+                    <span class="dot live"></span>
+                    <span class="name">sharebox-webadmin-55</span>
+                  </div>
+                  <div class="subline">
+                    <span class="txt">develop · <span class="num-col" data-clock="284">04:44</span></span>
+                    <span class="sp"></span>
+                    <button class="act" title="Focus terminal" aria-label="Focus terminal">
+                      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.4"/><path d="M4.6 6.4 6.4 8l-1.8 1.6M8.4 10h3"/></svg>
+                    </button>
+                  </div>
+                  <ul class="kids deep">
+                    <li>
+                      <div class="row r-task doing" tabindex="0">
+                        <span style="width:11px;flex:none"></span>
+                        <svg class="box" width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="7" cy="7" r="5.2"/><path d="M7 4.4v2.9l2 1.2" stroke-linecap="round"/></svg>
+                        <span class="name">Implement LOC-41..48 delete cases</span>
+                      </div>
+                    </li>
+                  </ul>
+                </div>
+              </li>
+            </ul>
+          </li>
+
+          <!-- ── collapsed project, no live sessions ─── -->
+          <li class="node">
+            <div class="row r-proj" tabindex="0">
+              <svg class="chev" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 2.5 8 6l-3.5 3.5"/></svg>
+              <svg class="ficon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"><path d="M2 12.5V4a.5.5 0 0 1 .5-.5h3.2l1.3 1.6h5.5a.5.5 0 0 1 .5.5v6.9a.5.5 0 0 1-.5.5h-10a.5.5 0 0 1-.5-.5Z"/></svg>
+              <span class="name" style="color:var(--fg-mute)">database</span>
+              <span class="sp"></span>
+            </div>
+            <ul class="kids">
+              <p class="empty">No sessions. Start one →</p>
+            </ul>
+          </li>
+
+        </ul>
+      </div>
+
+      <p class="frame-note">
+        Click any row to expand or select. Dots breathe while a session or agent is
+        generating; the timers tick live.
+      </p>
+    </div>
+
+    <!-- ══════════ RIGHT: the spec ══════════ -->
+    <div>
+
+      <section id="anatomy">
+        <h2><span class="num">01</span>Row anatomy</h2>
+        <p class="h2sub">Three row types, one grammar borrowed from the reference panel.</p>
+        <p>
+          The reference gives a project row (icon + bold name) and a two-line child row: status dot,
+          name, pill badge, then a muted second line with a right-aligned action. That's kept
+          verbatim for sessions. Subagents and tasks get a compressed single-line variant so depth
+          stays readable at 300px.
+        </p>
+
+        <div class="anat">
+          <div class="card ide" style="width:auto;box-shadow:none">
+            <div style="padding:2px 0">
+              <div class="row r-proj" style="cursor:default">
+                <svg class="chev" style="transform:rotate(90deg)" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 2.5 8 6l-3.5 3.5"/></svg>
+                <svg class="ficon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"><path d="M2 12.5V4a.5.5 0 0 1 .5-.5h3.2l1.3 1.6h5.5a.5.5 0 0 1 .5.5v6.9a.5.5 0 0 1-.5.5h-10a.5.5 0 0 1-.5-.5Z"/></svg>
+                <span class="name">goshift</span>
+                <span class="sp"></span>
+                <span class="pill">3</span>
+              </div>
+              <div class="sess-block sel" style="margin-left:14px">
+                <div class="row r-sess" style="cursor:default">
+                  <svg class="chev" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 2.5 8 6l-3.5 3.5"/></svg>
+                  <span class="dot work"></span>
+                  <span class="name">goshift-d3</span>
+                  <span class="pill hot">focused</span>
+                </div>
+                <div class="subline">
+                  <span class="txt">master · opus 5 · 17:22</span>
+                  <span class="sp"></span>
+                  <button class="act g" style="cursor:default" aria-hidden="true">
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.4"/><path d="M4.6 6.4 6.4 8l-1.8 1.6M8.4 10h3"/></svg>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <ol class="calls">
+            <li><b>Twisty</b><span> — hidden when the node has no children, so leaf sessions don't reserve dead space.</span></li>
+            <li><b>Status dot</b><span> — green live, amber generating, grey idle, red exited. Breathes only while generating.</span></li>
+            <li><b>Session name</b><span> — Claude Code's own <code>name</code> field (<code>goshift-d3</code>), not a truncated UUID.</span></li>
+            <li><b>Pill</b><span> — the reference's <code>primary</code> slot. Here: <code>focused</code> for the session bound to the active editor, or <code>exited</code>.</span></li>
+            <li><b>Detail line</b><span> — branch · model · elapsed. Monospace, so columns of times line up down the rail.</span></li>
+            <li><b>Action</b><span> — focus terminal on a live session, open transcript on a dead one. One affordance per row, never two.</span></li>
+            <li><b>Project action</b><span> — a hover-only <code>+</code> at the right end of the project row starts a new session in that folder: a shell terminal rooted at the project directory with <code>claude</code> sent to it. Same one-affordance rule; the row itself still only toggles.</span></li>
+          </ol>
+        </div>
+      </section>
+
+      <section id="grammar">
+        <h2><span class="num">02</span>Tree grammar</h2>
+        <p class="h2sub">Four levels, each backed by a file already on disk.</p>
+        <p>
+          Nothing here needs terminal scraping — Claude Code publishes all of it. Depth beyond
+          one is real (<code>spawnDepth: 2</code> occurs in the local history), and the
+          <code>subagents/</code> directory is <em>flat</em>, so parent links come from
+          <code>toolUseId</code> matching, never from directory position.
+        </p>
+
+        <div class="tbl-scroll">
+          <table>
+            <thead>
+              <tr><th>Level</th><th>Source</th><th>Key fields</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><b>Project</b></td>
+                <td><code>cwd</code>, grouped</td>
+                <td>basename of cwd; live session count</td>
+              </tr>
+              <tr>
+                <td><b>Session</b></td>
+                <td><code>~/.claude/sessions/&lt;pid&gt;.json</code></td>
+                <td><code>name</code>, <code>sessionId</code>, <code>cwd</code>, <code>pid</code>, <code>procStart</code>, <code>entrypoint</code></td>
+              </tr>
+              <tr>
+                <td><b>Subagent</b></td>
+                <td><code>projects/&lt;enc-cwd&gt;/&lt;sessionId&gt;/subagents/agent-*.meta.json</code></td>
+                <td><code>agentType</code>, <code>description</code>, <code>spawnDepth</code>, <code>toolUseId</code></td>
+              </tr>
+              <tr>
+                <td><b>Task</b></td>
+                <td><code>~/.claude/tasks/&lt;sessionId&gt;/N.json</code></td>
+                <td><code>subject</code>, <code>status</code>, <code>blockedBy</code></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Parent resolution</h3>
+        <pre><code>parentOf(agent) =
+  the transcript containing a record whose
+  toolUseID === agent.meta.toolUseId
+
+  search order:
+    1. &lt;sessionId&gt;.jsonl          → agent is depth 1
+    2. subagents/agent-*.jsonl    → agent nests under that agent</code></pre>
+        <p class="tight">
+          Verified on a real depth-2 agent: its <code>toolUseId</code> resolved into a sibling
+          <code>agent-*.jsonl</code>, not the session transcript. The algorithm holds at any depth.
+        </p>
+      </section>
+
+      <section id="states">
+        <h2><span class="num">03</span>State encoding</h2>
+        <p class="h2sub">Form as well as color — the dot changes behavior, not just hue.</p>
+
+        <div class="grid2">
+          <div class="card">
+            <h3 style="margin-top:0">Session states</h3>
+            <div style="display:grid;gap:11px" class="ide">
+              <div class="swatch"><span class="dot live" style="width:9px;height:9px;animation:none"></span> <b>Live · idle</b></div>
+              <div class="swatch"><span class="dot work" style="width:9px;height:9px"></span> <b>Generating</b> <span style="color:var(--page-muted);font-size:12px">breathing</span></div>
+              <div class="swatch"><span class="dot" style="width:9px;height:9px"></span> <b>Waiting on input</b></div>
+              <div class="swatch"><span class="dot stop" style="width:9px;height:9px;animation:none"></span> <b>Exited</b> <span style="color:var(--page-muted);font-size:12px">pill: exited</span></div>
+            </div>
+          </div>
+          <div class="card">
+            <h3 style="margin-top:0">Palette</h3>
+            <div style="display:grid;gap:10px">
+              <div class="swatch"><span class="chip" style="background:#1b1d1e"></span><div>Ground <code>#1b1d1e</code></div></div>
+              <div class="swatch"><span class="chip" style="background:#34383a"></span><div>Edge <code>#34383a</code></div></div>
+              <div class="swatch"><span class="chip" style="background:#2fbf71"></span><div>Live <code>#2fbf71</code></div></div>
+              <div class="swatch"><span class="chip" style="background:#d9a343"></span><div>Working <code>#d9a343</code></div></div>
+              <div class="swatch"><span class="chip" style="background:#d1596b"></span><div>Exited <code>#d1596b</code></div></div>
+            </div>
+          </div>
+        </div>
+
+        <h3>Liveness, honestly</h3>
+        <ul class="plain">
+          <li><b>Sessions</b> — <code>sessions/*.json</code> outlives the process. Probe with
+            <code>process.kill(pid, 0)</code> in a try/catch, and guard PID reuse with
+            <code>procStart</code>.</li>
+          <li><b>Subagents</b> — in-process, so no PID and no socket. A subagent is done when the
+            <code>tool_result</code> for its <code>toolUseId</code> lands in the parent transcript,
+            or when the <code>SubagentStop</code> hook fires. Without that signal every subagent
+            shows busy forever.</li>
+        </ul>
+      </section>
+
+      <section id="surfaces">
+        <h2><span class="num">04</span>Supporting surfaces</h2>
+        <p class="h2sub">The rail is the product; these three keep it from needing a second window.</p>
+
+        <h3>Row context menu</h3>
+        <p class="tight">Right-click a session. Destructive items sit below the rule, and the one truly destructive item is the only red thing in the extension.</p>
+        <div class="menu" style="margin-bottom:22px">
+          <div class="mi hl">Focus terminal <span class="k">↵</span></div>
+          <div class="mi">Open transcript</div>
+          <div class="mi">Reveal working folder</div>
+          <div class="msep"></div>
+          <div class="mi">Copy session ID</div>
+          <div class="mi">Pin to top</div>
+          <div class="msep"></div>
+          <div class="mi danger">Stop session</div>
+        </div>
+
+        <h3>Status bar</h3>
+        <p class="tight">One item, left cluster. Click opens the rail. Counts only what's alive.</p>
+        <div class="statusbar" style="margin-bottom:22px">
+          <span class="sb-item"><span class="dot work" style="background:#d9a343"></span> 1 generating</span>
+          <span class="sb-item"><span class="dot" style="background:#2fbf71"></span> 5 live</span>
+          <span class="sb-item" style="color:#7d8785">3 agents</span>
+        </div>
+
+        <h3>Transcript view</h3>
+        <p>
+          Clicking <b>Open transcript</b> opens a read-only webview beside the editor: the tailed
+          <code>.jsonl</code> rendered as turns, with tool calls collapsed to one line each and
+          subagent spawns rendered as inline cards that link back to their row in the rail. This is
+          a reader, not a chat box — v1 sends nothing into the session.
+        </p>
+      </section>
+
+      <section id="build">
+        <h2><span class="num">05</span>Build notes</h2>
+        <p class="h2sub">What the first commit contains.</p>
+
+        <h3>Contribution point</h3>
+        <pre><code>"contributes": {
+  "viewsContainers": {
+    "activitybar": [{
+      "id": "sessionRail",
+      "title": "Sessions",
+      "icon": "media/rail.svg"
+    }]
+  },
+  "views": {
+    "sessionRail": [{
+      "id": "sessionRail.tree",
+      "name": "Sessions",
+      "type": "tree"
+    }]
+  }
+}</code></pre>
+        <p class="tight">
+          A single <code>TreeDataProvider</code> whose <code>getChildren</code> walks
+          project → session → agent → task. Arbitrary nesting is native to the API; the pill and
+          detail line map to <code>TreeItem.description</code>, the dot to a themed
+          <code>ThemeIcon</code>, and the row action to
+          <code>contributes.menus["view/item/context"]</code> with <code>group: "inline"</code>.
+        </p>
+
+        <h3>Two halves, different stability</h3>
+        <ul class="plain">
+          <li><b>Hooks — events and liveness.</b> <code>SessionStart</code>,
+            <code>SubagentStop</code>, <code>Stop</code> POST to a localhost server the extension
+            owns. Documented surface, push-based, no polling.</li>
+          <li><b>Filesystem — detail and backfill.</b> Rich but private. Tail with byte offsets;
+            never re-parse a multi-megabyte <code>.jsonl</code> on every change event or the
+            extension host stalls.</li>
+        </ul>
+
+        <div class="warn">
+          <p>
+            <b>This reads private state.</b> Everything under <code>~/.claude</code> is internal and
+            unversioned, and drift is already visible in local history — <code>2.1.216</code>
+            subagent records carry <code>slug</code>; <code>2.1.233</code> session records carry
+            <code>name</code>, <code>nameSource</code>, <code>nameSince</code>. Version-gate the
+            parsers and degrade to a flat session list when a shape is unrecognized.
+          </p>
+        </div>
+
+        <h3>Deferred past v1</h3>
+        <ul class="plain">
+          <li>Writing into a session over <code>messagingSocketPath</code> — undocumented IPC
+            (<code>peerProtocol: 1</code>), easy way to disrupt a live run.</li>
+        </ul>
+      </section>
+
+      <footer>
+        Draft one. Sample data is real local state: session names, branches, agent types
+        (<code>Explore</code>, <code>cavecrew-investigator</code>) and the depth-2 nesting all come
+        from <code>~/.claude</code> on this machine.
+      </footer>
+
+    </div>
+  </div>
+</div>
+
+<script>
+  // expand / collapse + selection
+  document.querySelectorAll("#rail .row").forEach(function (row) {
+    var node = row.closest(".node");
+    var block = row.closest(".sess-block");
+
+    function activate(e) {
+      if (e.target.closest(".act")) return;
+      if (node && node.querySelector(".kids")) {
+        if (node.hasAttribute("data-open")) node.removeAttribute("data-open");
+        else node.setAttribute("data-open", "");
+      }
+      if (block) {
+        document.querySelectorAll("#rail .sess-block.sel").forEach(function (b) {
+          b.classList.remove("sel");
+        });
+        block.classList.add("sel");
+      }
+    }
+
+    row.addEventListener("click", activate);
+    row.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); activate(e); }
+    });
+  });
+
+  // action buttons shouldn't toggle the node
+  document.querySelectorAll("#rail .act, #rail .hbtn").forEach(function (b) {
+    b.addEventListener("click", function (e) { e.stopPropagation(); });
+  });
+
+  // live elapsed timers
+  var clocks = [].slice.call(document.querySelectorAll("[data-clock]")).map(function (el) {
+    return { el: el, t: parseInt(el.getAttribute("data-clock"), 10) };
+  });
+  function paint() {
+    clocks.forEach(function (c) {
+      c.t += 1;
+      var m = Math.floor(c.t / 60), s = c.t % 60;
+      c.el.textContent = String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0");
+    });
+  }
+  if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    paint();
+    setInterval(paint, 1000);
+  }
+</script>

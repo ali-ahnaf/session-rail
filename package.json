@@ -1,0 +1,365 @@
+{
+  "name": "session-rail",
+  "displayName": "Session Rail",
+  "description": "Shows every running Claude Code session on the machine as a nested sidebar tree: project, session, subagent, task.",
+  "publisher": "local",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "main": "./dist/extension.js",
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "scripts": {
+    "build": "node esbuild.js --production",
+    "watch": "node esbuild.js --watch",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src --ext ts",
+    "vscode:prepublish": "npm run build",
+    "smoke": "esbuild scripts/smoke.ts --bundle --platform=node --target=node18 --format=cjs --external:vscode --outfile=.smoke.js --log-level=warning && node .smoke.js",
+    "check:registry": "esbuild scripts/registry-check.ts --bundle --platform=node --target=node18 --format=cjs --alias:vscode=./scripts/vscode-stub.js --outfile=.regcheck.js --log-level=warning && node .regcheck.js",
+    "verify": "npm run typecheck && npm run lint && npm run smoke && npm run check:registry && npm run build"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.90.0",
+    "@types/node": "^20.14.0",
+    "typescript": "^5.6.0",
+    "esbuild": "^0.23.0",
+    "@typescript-eslint/eslint-plugin": "^7.16.0",
+    "@typescript-eslint/parser": "^7.16.0",
+    "eslint": "^8.57.0"
+  },
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "sessionRail",
+          "title": "Sessions",
+          "icon": "media/rail.svg"
+        }
+      ]
+    },
+    "views": {
+      "sessionRail": [
+        {
+          "id": "sessionRail.tree",
+          "name": "Sessions",
+          "type": "tree"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "sessionRail.tree",
+        "contents": "No Claude Code sessions found yet.\nSessions appear here automatically once `claude` is running in a terminal on this machine.\n[Refresh](command:sessionRail.refresh)"
+      }
+    ],
+    "commands": [
+      {
+        "command": "sessionRail.refresh",
+        "title": "Refresh",
+        "category": "Session Rail",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "sessionRail.focusTerminal",
+        "title": "Open Terminal",
+        "category": "Session Rail",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "sessionRail.newSession",
+        "title": "New Session Here",
+        "category": "Session Rail",
+        "icon": "$(add)"
+      },
+      {
+        "command": "sessionRail.newSessionHome",
+        "title": "New Session in Home Directory",
+        "category": "Session Rail",
+        "icon": "$(add)"
+      },
+      {
+        "command": "sessionRail.openTranscript",
+        "title": "Open Transcript",
+        "category": "Session Rail",
+        "icon": "$(output)"
+      },
+      {
+        "command": "sessionRail.revealFolder",
+        "title": "Reveal Working Folder",
+        "category": "Session Rail"
+      },
+      {
+        "command": "sessionRail.copySessionId",
+        "title": "Copy Session ID",
+        "category": "Session Rail"
+      },
+      {
+        "command": "sessionRail.stopSession",
+        "title": "Stop Session",
+        "category": "Session Rail"
+      },
+      {
+        "command": "sessionRail.toggleTasks",
+        "title": "Toggle Tasks",
+        "category": "Session Rail"
+      },
+      {
+        "command": "sessionRail.showExited",
+        "title": "Show Exited Sessions",
+        "category": "Session Rail",
+        "icon": "$(eye-closed)"
+      },
+      {
+        "command": "sessionRail.hideExited",
+        "title": "Hide Exited Sessions",
+        "category": "Session Rail",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "sessionRail.searchSessions",
+        "title": "Search Sessions",
+        "category": "Session Rail",
+        "icon": "$(search)"
+      },
+      {
+        "command": "sessionRail.clearSearch",
+        "title": "Clear Session Search",
+        "category": "Session Rail",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "sessionRail.showLog",
+        "title": "Show Log",
+        "category": "Session Rail"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "sessionRail.searchSessions",
+          "when": "view == sessionRail.tree",
+          "group": "navigation@1"
+        },
+        {
+          "command": "sessionRail.clearSearch",
+          "when": "view == sessionRail.tree && sessionRail.searchActive",
+          "group": "navigation@1"
+        },
+        {
+          "command": "sessionRail.newSessionHome",
+          "when": "view == sessionRail.tree",
+          "group": "navigation@2"
+        },
+        {
+          "command": "sessionRail.refresh",
+          "when": "view == sessionRail.tree",
+          "group": "navigation@3"
+        },
+        {
+          "command": "sessionRail.showExited",
+          "when": "view == sessionRail.tree && !sessionRail.exitedVisible",
+          "group": "navigation@4"
+        },
+        {
+          "command": "sessionRail.hideExited",
+          "when": "view == sessionRail.tree && sessionRail.exitedVisible",
+          "group": "navigation@4"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "sessionRail.newSession",
+          "when": "view == sessionRail.tree && viewItem == project",
+          "group": "inline@1"
+        },
+        {
+          "command": "sessionRail.focusTerminal",
+          "when": "view == sessionRail.tree && (viewItem == session.live || viewItem == session.exited)",
+          "group": "inline@1"
+        },
+        {
+          "command": "sessionRail.openTranscript",
+          "when": "view == sessionRail.tree && viewItem == session.exited",
+          "group": "inline@2"
+        },
+        {
+          "command": "sessionRail.newSession",
+          "when": "view == sessionRail.tree && viewItem == project",
+          "group": "navigation@1"
+        },
+        {
+          "command": "sessionRail.focusTerminal",
+          "when": "view == sessionRail.tree && (viewItem == session.live || viewItem == session.exited)",
+          "group": "navigation@1"
+        },
+        {
+          "command": "sessionRail.openTranscript",
+          "when": "view == sessionRail.tree && (viewItem == session.live || viewItem == session.exited || viewItem == agent)",
+          "group": "navigation@2"
+        },
+        {
+          "command": "sessionRail.revealFolder",
+          "when": "view == sessionRail.tree && (viewItem == project || viewItem == session.live || viewItem == session.exited)",
+          "group": "navigation@3"
+        },
+        {
+          "command": "sessionRail.copySessionId",
+          "when": "view == sessionRail.tree && (viewItem == session.live || viewItem == session.exited)",
+          "group": "1_copy"
+        },
+        {
+          "command": "sessionRail.stopSession",
+          "when": "view == sessionRail.tree && viewItem == session.live",
+          "group": "9_danger"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "sessionRail.newSession",
+          "when": "false"
+        },
+        {
+          "command": "sessionRail.focusTerminal",
+          "when": "false"
+        },
+        {
+          "command": "sessionRail.openTranscript",
+          "when": "false"
+        },
+        {
+          "command": "sessionRail.revealFolder",
+          "when": "false"
+        },
+        {
+          "command": "sessionRail.copySessionId",
+          "when": "false"
+        },
+        {
+          "command": "sessionRail.stopSession",
+          "when": "false"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Session Rail",
+      "properties": {
+        "sessionRail.refreshInterval": {
+          "type": "number",
+          "default": 2000,
+          "minimum": 500,
+          "maximum": 30000,
+          "description": "How often to poll ~/.claude for changes, in milliseconds. Lower values cost more CPU."
+        },
+        "sessionRail.showTasks": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show task nodes under subagents in the tree."
+        },
+        "sessionRail.showExited": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show sessions that have exited. Exited sessions keep their transcript, so they can still be opened for review."
+        },
+        "sessionRail.historyDays": {
+          "type": "number",
+          "default": 7,
+          "minimum": 0,
+          "maximum": 90,
+          "description": "Days of past sessions to recover from transcripts when exited sessions are shown. The session registry only tracks running processes, so history comes from the transcript files themselves. Set to 0 to show only sessions the registry still knows about."
+        },
+        "sessionRail.groupBy": {
+          "type": "string",
+          "enum": [
+            "cwd",
+            "gitRoot"
+          ],
+          "enumDescriptions": [
+            "Group sessions by their working directory.",
+            "Group sessions by the git repository root, folding subdirectory sessions into their repo."
+          ],
+          "default": "cwd",
+          "description": "How to group sessions at the project level of the tree."
+        },
+        "sessionRail.terminalLocation": {
+          "type": "string",
+          "enum": [
+            "editor",
+            "panel"
+          ],
+          "enumDescriptions": [
+            "Open resumed sessions as terminals in editor tabs.",
+            "Open resumed sessions as terminals in the panel."
+          ],
+          "default": "editor",
+          "description": "Where a terminal opened for a session appears. Only applies to terminals Session Rail creates; a session already running in this window is focused where it is."
+        },
+        "sessionRail.openLiveSession": {
+          "type": "string",
+          "enum": [
+            "ask",
+            "adopt",
+            "fork"
+          ],
+          "enumDescriptions": [
+            "Ask each time whether to move the session here or fork it.",
+            "Move the session here: stop the running process, then resume it in a new terminal under the same session id.",
+            "Leave the running process alone and continue the conversation under a new session id, which appears as a second row."
+          ],
+          "default": "ask",
+          "description": "What to do when you open a session that is live in a terminal this window cannot see. Two processes cannot share one transcript, so the old one is either stopped or left running with a fork. Only applies to live sessions with no terminal here; exited sessions always resume in place."
+        },
+        "sessionRail.claudeHome": {
+          "type": "string",
+          "default": "",
+          "description": "Overrides the location of ~/.claude. Mainly useful for testing; leave empty to use the default location."
+        }
+      }
+    },
+    "colors": [
+      {
+        "id": "sessionRail.live",
+        "description": "Session is live and idle",
+        "defaults": {
+          "dark": "#2fbf71",
+          "light": "#14794a",
+          "highContrast": "#2fbf71"
+        }
+      },
+      {
+        "id": "sessionRail.working",
+        "description": "Session or agent is generating",
+        "defaults": {
+          "dark": "#d9a343",
+          "light": "#9a6b13",
+          "highContrast": "#d9a343"
+        }
+      },
+      {
+        "id": "sessionRail.exited",
+        "description": "Session has exited",
+        "defaults": {
+          "dark": "#d1596b",
+          "light": "#b03047",
+          "highContrast": "#d1596b"
+        }
+      },
+      {
+        "id": "sessionRail.waiting",
+        "description": "Session is waiting on input",
+        "defaults": {
+          "dark": "#6a7370",
+          "light": "#5a6360",
+          "highContrast": "#6a7370"
+        }
+      }
+    ]
+  }
+}
