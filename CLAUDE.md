@@ -69,10 +69,12 @@ terminal/
   resume       open-or-resume: focus the host terminal, else `claude --resume`
 status/        one status-bar item
 transcript/    read-only webview transcript reader
+workspace/
+  explorer     show a directory in the Explorer (add root / reveal)
 extension.ts   activation + command wiring only — a switchboard, no logic
 ```
 
-Direction of dependency is one-way: `extension → {tree, status, transcript, terminal} → scan → model`.
+Direction of dependency is one-way: `extension → {tree, status, transcript, terminal, workspace} → scan → model`.
 Nothing in `scan/` may import from `tree/`. Only `scan/registry.ts` in that layer
 imports `vscode` (for `EventEmitter` and config); keep it that way so the rest
 stays runnable outside the extension host.
@@ -86,6 +88,19 @@ stays runnable outside the extension host.
   plain `claude` in a project directory. The extension still writes nothing
   itself — but those processes do, so never point one at a transcript another
   live process owns (see the fork rule below).
+- **`showInExplorer` is the one write outside `~/.claude`.** Adding a workspace
+  root always lands on disk somewhere: with a saved `.code-workspace`,
+  `updateWorkspaceFolders` writes the new folder into that file — an edit to the
+  user's own repo config; without one, VS Code mints an untitled workspace under
+  user data and `migrateWorkspaceSettings` copies folder-scoped settings into it.
+  Hence **add-only, never toggle** — a stray click must not remove a root the
+  user arranged by hand, so a directory already reachable from a root is only
+  revealed. Two clicks are gated behind a modal confirm because they are
+  expensive rather than wrong: `os.homedir()` (which `newSessionHome` makes a
+  perfectly ordinary row to click, and which puts a recursive watcher over the
+  whole home dir) and the filesystem root. See `src/workspace/explorer.ts` for
+  the branch behavior the VS Code source actually has — worth reading before
+  touching it, because three of its four cases are counter-intuitive.
 - **One process per transcript, always.** A live session with no terminal in
   this window is running somewhere we can't see, and two processes on one
   transcript corrupt it. `terminal/resume.ts` therefore never sends a plain
@@ -223,9 +238,20 @@ check into a passing no-op.
 
 - View container `sessionRail`, view `sessionRail.tree`.
 - Commands: `sessionRail.` + `refresh`, `focusTerminal`, `newSession`,
-  `newSessionHome`, `openTranscript`, `revealFolder`, `copySessionId`,
-  `stopSession`, `toggleTasks`, `showExited`, `hideExited`, `searchSessions`,
-  `clearSearch`, `showLog`.
+  `newSessionHome`, `openTranscript`, `showInExplorer`, `revealFolder`,
+  `copySessionId`, `stopSession`, `toggleTasks`, `showExited`, `hideExited`,
+  `searchSessions`, `clearSearch`, `showLog`.
+- `showInExplorer` is the `$(folder-opened)` inline icon at the right end of
+  every project and session row (`inline@3`, after `newSession`/`focusTerminal`
+  at `@1` and `openTranscript` at `@2`). It is **not** `revealFolder`, which is
+  `revealFileInOS` — Finder, a different action, and still menu-only with no
+  icon. The Explorer can only render workspace roots and their contents, so
+  showing an arbitrary directory means appending a root; `vscode.openFolder` is
+  the wrong call because it replaces the window's contents. Append at the END,
+  because adding/removing/changing folder 0 restarts every extension by
+  contract. Node resolution and the `when` clause mirror `revealFolder`
+  (`asProject(node)?.dir ?? asSession(node)?.cwd`), so it works on both readings
+  of "the session's folder".
 - `showExited`/`hideExited` are one view-title toggle for the `showExited`
   setting, split into two commands so the icon can show state — exactly one is
   visible, gated on the `sessionRail.exitedVisible` context key. Both write the

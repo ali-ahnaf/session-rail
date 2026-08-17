@@ -92,6 +92,12 @@
         "icon": "$(output)"
       },
       {
+        "command": "sessionRail.showInExplorer",
+        "title": "Show in Explorer",
+        "category": "Session Rail",
+        "icon": "$(folder-opened)"
+      },
+      {
         "command": "sessionRail.revealFolder",
         "title": "Reveal Working Folder",
         "category": "Session Rail"
@@ -191,6 +197,11 @@
           "group": "inline@2"
         },
         {
+          "command": "sessionRail.showInExplorer",
+          "when": "view == sessionRail.tree && (viewItem == project || viewItem == session.live || viewItem == session.exited)",
+          "group": "inline@3"
+        },
+        {
           "command": "sessionRail.newSession",
           "when": "view == sessionRail.tree && viewItem == project",
           "group": "navigation@1"
@@ -206,9 +217,14 @@
           "group": "navigation@2"
         },
         {
-          "command": "sessionRail.revealFolder",
+          "command": "sessionRail.showInExplorer",
           "when": "view == sessionRail.tree && (viewItem == project || viewItem == session.live || viewItem == session.exited)",
           "group": "navigation@3"
+        },
+        {
+          "command": "sessionRail.revealFolder",
+          "when": "view == sessionRail.tree && (viewItem == project || viewItem == session.live || viewItem == session.exited)",
+          "group": "navigation@4"
         },
         {
           "command": "sessionRail.copySessionId",
@@ -232,6 +248,10 @@
         },
         {
           "command": "sessionRail.openTranscript",
+          "when": "false"
+        },
+        {
+          "command": "sessionRail.showInExplorer",
           "when": "false"
         },
         {

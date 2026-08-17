@@ -23,6 +23,7 @@ import { TranscriptPanel } from './transcript/panel';
 import { RailTreeProvider } from './tree/provider';
 import { disposeSearch, promptSearch } from './tree/search';
 import { log } from './util/log';
+import { showInExplorer } from './workspace/explorer';
 
 const CONFIG_SECTION = 'sessionRail';
 
@@ -172,6 +173,24 @@ function registerCommands(
         return;
       }
       await vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(dir));
+    }),
+
+    register('sessionRail.showInExplorer', async (node) => {
+      const project = asProject(node);
+      const session = asSession(node);
+      const dir = project?.dir ?? session?.cwd;
+      if (!dir) {
+        return;
+      }
+
+      const outcome = await showInExplorer(dir);
+      if (outcome === 'missing-dir') {
+        void vscode.window.showErrorMessage(`${dir} no longer exists.`);
+      } else if (outcome === 'failed') {
+        void vscode.window.showErrorMessage(
+          `Could not add ${dir} to this workspace. See the Session Rail log.`,
+        );
+      }
     }),
 
     register('sessionRail.copySessionId', async (node) => {
