@@ -1,11 +1,22 @@
 {
   "name": "session-rail",
-  "displayName": "Session Rail",
+  "displayName": "Session Rail for Claude Code",
+  "icon": "media/icon.png",
   "description": "Shows every running Claude Code session on the machine as a nested sidebar tree: project, session, subagent, task.",
-  "publisher": "local",
+  "publisher": "AliAhnaf",
+  "keywords": [
+    "claude",
+    "claude code",
+    "sessions",
+    "agents",
+    "subagents"
+  ],
   "version": "0.1.0",
-  "private": true,
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ali-ahnaf/session-rail.git"
+  },
   "engines": {
     "vscode": "^1.90.0"
   },
@@ -50,7 +61,8 @@
         {
           "id": "sessionRail.tree",
           "name": "Sessions",
-          "type": "tree"
+          "type": "tree",
+          "icon": "media/rail.svg"
         }
       ]
     },
@@ -281,7 +293,7 @@
         "sessionRail.showTasks": {
           "type": "boolean",
           "default": true,
-          "description": "Show task nodes under subagents in the tree."
+          "description": "Show task nodes under a session or subagent that has a todo list."
         },
         "sessionRail.showExited": {
           "type": "boolean",

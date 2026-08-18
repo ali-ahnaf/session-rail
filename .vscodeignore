@@ -12,3 +12,4 @@ scripts/**
 .smoke.js
 .regcheck.js
 package-lock.json
+media/demo.mp4
