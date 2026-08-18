@@ -13,3 +13,5 @@ scripts/**
 .regcheck.js
 package-lock.json
 media/demo.mp4
+.claude/**
+CLAUDE.md

@@ -11,7 +11,7 @@
     "agents",
     "subagents"
   ],
-  "version": "0.1.0",
+  "version": "0.1.1",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -33,6 +33,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint src --ext ts",
     "vscode:prepublish": "npm run build",
+    "package": "npx --yes @vscode/vsce package",
     "smoke": "esbuild scripts/smoke.ts --bundle --platform=node --target=node18 --format=cjs --external:vscode --outfile=.smoke.js --log-level=warning && node .smoke.js",
     "check:registry": "esbuild scripts/registry-check.ts --bundle --platform=node --target=node18 --format=cjs --alias:vscode=./scripts/vscode-stub.js --outfile=.regcheck.js --log-level=warning && node .regcheck.js",
     "verify": "npm run typecheck && npm run lint && npm run smoke && npm run check:registry && npm run build"

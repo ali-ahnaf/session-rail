@@ -1,6 +1,6 @@
 ---
 name: loop-engineering
-description: Plan-then-execute discipline for large multi-step work in sharebox-api — a substantial feature spanning multiple files/layers (repository → service → route → tests), a cross-file refactor, or a bug hunt across several files. Enforces Goal → Plan → Action → Observation → Adjustment, a written plan file, a persistent todo spine, and real verification before declaring done. Use when the task touches 3+ files or spans more than one work cycle. Skip for single-file edits, one-line fixes, quick lookups, and questions.
+description: Plan-then-execute discipline for large multi-step work — a substantial feature spanning multiple files/layers (repository → service → route → tests), a cross-file refactor, or a bug hunt across several files. Enforces Goal → Plan → Action → Observation → Adjustment, a written plan file, a persistent todo spine, and real verification before declaring done. Use when the task touches 3+ files or spans more than one work cycle. Skip for single-file edits, one-line fixes, quick lookups, and questions.
 model: opus
 effort: high
 ---
@@ -39,7 +39,7 @@ Based on the agentic-loop model (Goal → Action → Observation → Adjustment)
 
 ## 5. Observation — verify with real feedback, not assumption
 
-- **Every action gets observed.** After an edit, run the relevant check: `npm run build` after editing `sharebox-api-ts/src` (stale `dist/` is the usual cause of confusing failures), `npm run test:one -- test/path/to/file.js` for a scoped run, `npm test` for the suite, `GET localhost:3000/v2/sharebox_ping` for liveness.
+- **Every action gets observed.** After an edit, run the relevant check: `npm run typecheck` for shapes, `npm run smoke` for the scan layer, `npm run check:registry` for the rendered tree, `npm run verify` for all of it plus the bundle.
 - **Read the actual output.** "It should work now" is not an observation. Quote or check the real result — test output, HTTP response, compiler error — before marking a step done.
 - **Failed observation → adjust, don't push through.** A failing test after your change means the loop goes back to Adjustment, not forward to the next subtask.
 

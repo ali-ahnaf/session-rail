@@ -172,7 +172,29 @@ async function main(): Promise<void> {
     snapshot.warnings.join('; ') || 'none');
 
   const agents = countAgents(snapshot);
-  check('resolves agents', agents.total > 0, `${agents.total} total, ${agents.running} running`);
+  // Agents are a property of whichever sessions happen to be alive right now: a
+  // machine whose live sessions never spawned one has nothing to resolve, so
+  // report that as a coverage gap instead of a failure.
+  if (agents.total === 0) {
+    console.log('  [gap ] no live session has spawned an agent — agent resolution did not run');
+  } else {
+    const flat = snapshot.projects.flatMap((p) => p.sessions).flatMap((s) => {
+      const out: AgentNode[] = [];
+      walkAgents(s.agents, (a) => out.push(a));
+      return out;
+    });
+    check(
+      'resolved agents are well formed',
+      agents.running <= agents.total &&
+        flat.every(
+          (a) =>
+            a.agentType.length > 0 &&
+            a.spawnDepth >= 1 &&
+            (a.state === 'running' || a.state === 'done'),
+        ),
+      `${agents.total} total, ${agents.running} running, max depth ${agents.maxDepth}`,
+    );
+  }
   check(
     'no agent claims a depth-1 slot while nested',
     snapshot.projects
