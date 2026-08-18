@@ -14,6 +14,7 @@ import {
   FilterNode,
   ProjectNode,
   RailNode,
+  SectionNode,
   SessionNode,
   SessionState,
   TaskNode,
@@ -39,6 +40,12 @@ export interface RenderOptions {
    * the session never existed.
    */
   exitedHidden?: boolean;
+  /**
+   * This project row is pinned. Only affects a project item: it picks the
+   * `pinned` icon and the `project.pinned` context value, so the row offers
+   * Unpin where an unpinned one offers Pin.
+   */
+  pinned?: boolean;
 }
 
 /** TreeItem that keeps the RailNode it was rendered from reachable. */
@@ -66,6 +73,8 @@ export function nodeKey(node: RailNode): string {
 /** Build the vscode.TreeItem for any node in the tree. */
 export function toTreeItem(node: RailNode, options: RenderOptions = {}): RailTreeItem {
   switch (node.kind) {
+    case 'section':
+      return buildSectionItem(node);
     case 'project':
       return buildProjectItem(node, options);
     case 'session':
@@ -124,6 +133,27 @@ function buildFilterItem(node: FilterNode, options: RenderOptions): RailTreeItem
   return item;
 }
 
+/**
+ * The `Pinned` accordion header. Expanded by default — pins exist to be visible —
+ * but its `TreeItem.id` is stable, so a user who collapses it keeps it collapsed
+ * across refreshes.
+ *
+ * `contextValue` is deliberately unset: like the search row it owns no context
+ * menu, and every contributed menu is gated on one of the documented values.
+ */
+function buildSectionItem(node: SectionNode): RailTreeItem {
+  const item = new RailTreeItem(node.label, vscode.TreeItemCollapsibleState.Expanded, node);
+  item.id = nodeKey(node);
+  item.description = String(node.projects.length);
+  item.iconPath = new vscode.ThemeIcon('pinned');
+  item.tooltip = new vscode.MarkdownString(
+    '**Pinned folders**\n\nKept at the top of the tree, in the order they were pinned. ' +
+      'A pinned folder stays listed even when nothing is running in it.',
+  );
+
+  return item;
+}
+
 function buildProjectItem(node: ProjectNode, options: RenderOptions): RailTreeItem {
   // A project with nothing running is history — with `showExited` on there can
   // be dozens of them, so they open closed. Anything live stays expanded, and
@@ -135,6 +165,7 @@ function buildProjectItem(node: ProjectNode, options: RenderOptions): RailTreeIt
         ? vscode.TreeItemCollapsibleState.Expanded
         : vscode.TreeItemCollapsibleState.Collapsed;
 
+  const pinned = options.pinned === true;
   const item = new RailTreeItem(node.name, collapsibleState, node);
   item.id = nodeKey(node);
   if (node.liveCount > 0) {
@@ -143,10 +174,18 @@ function buildProjectItem(node: ProjectNode, options: RenderOptions): RailTreeIt
     // A bare number here would read as a live count, which is exactly what it
     // is not.
     item.description = `${node.sessions.length} past`;
+  } else if (pinned) {
+    // Only a pinned row can be here with nothing under it, and a bare label
+    // would look like a folder whose sessions failed to load.
+    item.description = 'no sessions';
   }
-  item.iconPath = new vscode.ThemeIcon('folder');
-  item.contextValue = 'project';
-  item.tooltip = new vscode.MarkdownString(`**Project**\n\n- **Path**: \`${node.dir}\``);
+  item.iconPath = new vscode.ThemeIcon(pinned ? 'pinned' : 'folder');
+  // The one place a contextValue carries more than a node kind: the menus need
+  // to offer Pin or Unpin, never both.
+  item.contextValue = pinned ? 'project.pinned' : 'project';
+  item.tooltip = new vscode.MarkdownString(
+    `**Project**\n\n- **Path**: \`${node.dir}\`` + (pinned ? '\n- **Pinned**: yes' : ''),
+  );
 
   return item;
 }

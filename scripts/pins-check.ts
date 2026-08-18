@@ -1,0 +1,243 @@
+/**
+ * Check of the pinned-folders view logic, run against a stub vscode.
+ *
+ * This is the one deterministic check in the repo, and the exception is
+ * deliberate: everything else in Session Rail reads state Claude Code writes, so
+ * fixtures would only prove the code agrees with assumptions that were already
+ * wrong once. Pins are the extension's OWN state — no on-disk shape to drift, no
+ * machine to depend on — so the snapshot below is a stand-in for the registry,
+ * not a fixture of `~/.claude`.
+ *
+ * Run: npm run check:pins
+ */
+
+import type { ProjectNode, RailNode, SectionNode, Snapshot } from '../src/model/types';
+import type { RailRegistry } from '../src/scan/registry';
+import { RailTreeProvider } from '../src/tree/provider';
+import { PinStore } from '../src/tree/pins';
+
+const vscodeStub = require('./vscode-stub.js') as {
+  EventEmitter: new () => { event: unknown; fire(value: unknown): void; dispose(): void };
+};
+
+let failures = 0;
+
+function check(label: string, ok: boolean, detail = ''): void {
+  console.log(`  [${ok ? 'pass' : 'FAIL'}] ${label}${detail ? ` — ${detail}` : ''}`);
+  if (!ok) {
+    failures += 1;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Stand-ins
+// ─────────────────────────────────────────────────────────────
+
+/** An in-memory `Memento`, so a check does not touch real globalState. */
+function fakeMemento(initial: unknown = undefined) {
+  const store = new Map<string, unknown>();
+  if (initial !== undefined) {
+    store.set('sessionRail.pinnedProjects', initial);
+  }
+  return {
+    keys: () => [...store.keys()],
+    get: <T>(key: string, fallback?: T) => (store.has(key) ? (store.get(key) as T) : fallback),
+    update: (key: string, value: unknown) => {
+      store.set(key, value);
+      return Promise.resolve();
+    },
+  };
+}
+
+function project(dir: string, sessionTitles: string[]): ProjectNode {
+  return {
+    kind: 'project',
+    id: dir,
+    name: dir.slice(dir.lastIndexOf('/') + 1),
+    dir,
+    liveCount: sessionTitles.length,
+    sessions: sessionTitles.map((title, index) => ({
+      kind: 'session',
+      id: `${dir}#${index}`,
+      sessionId: `${dir}#${index}`,
+      pid: 1000 + index,
+      name: `session-${index}`,
+      title,
+      cwd: dir,
+      state: 'idle',
+      alive: true,
+      source: 'registry',
+      agents: [],
+      tasks: [],
+    })),
+  };
+}
+
+function snapshotOf(projects: ProjectNode[]): Snapshot {
+  return { projects, generatedAt: 0, warnings: [] };
+}
+
+/** Registry stand-in: the provider only reads `snapshot()` and `onDidChange`. */
+function fakeRegistry(snapshot: Snapshot): RailRegistry {
+  const emitter = new vscodeStub.EventEmitter();
+  return {
+    snapshot: () => snapshot,
+    onDidChange: emitter.event,
+  } as unknown as RailRegistry;
+}
+
+function labels(nodes: RailNode[]): string[] {
+  return nodes.map((node) => (node.kind === 'section' ? `[${node.label}]` : String((node as ProjectNode).name ?? node.kind)));
+}
+
+function sectionOf(roots: RailNode[]): SectionNode | undefined {
+  return roots.find((node): node is SectionNode => node.kind === 'section');
+}
+
+// ─────────────────────────────────────────────────────────────
+// Checks
+// ─────────────────────────────────────────────────────────────
+
+async function main(): Promise<void> {
+  const alpha = project('/work/alpha', ['deploy the api']);
+  const beta = project('/work/beta', ['fix the tree']);
+  const gamma = project('/work/gamma', ['write the docs']);
+  const registry = fakeRegistry(snapshotOf([alpha, beta, gamma]));
+
+  console.log('\nNo pins');
+  {
+    const pins = new PinStore(fakeMemento());
+    const provider = new RailTreeProvider(registry, pins);
+    const roots = provider.getChildren();
+    check('no section row', sectionOf(roots) === undefined);
+    check('search row still first', roots[0]?.kind === 'filter', labels(roots).join(', '));
+    check('every project at the root', roots.length === 4, labels(roots).join(', '));
+    provider.dispose();
+  }
+
+  console.log('\nPins in pin order, above the rest');
+  {
+    // Deliberately not snapshot order: gamma pinned first must stay first.
+    const pins = new PinStore(fakeMemento(['/work/gamma', '/work/alpha/']));
+    const provider = new RailTreeProvider(registry, pins);
+    const roots = provider.getChildren();
+    const section = sectionOf(roots);
+    check('section is the row under search', roots[1]?.kind === 'section', labels(roots).join(', '));
+    check(
+      'pinned in pin order',
+      section?.projects.map((p) => p.name).join(',') === 'gamma,alpha',
+      section?.projects.map((p) => p.name).join(',') ?? 'none',
+    );
+    check('trailing slash matched the same folder', section?.projects.length === 2);
+    check(
+      'pinned projects are not repeated at the root',
+      roots.filter((node) => node.kind === 'project').map((node) => (node as ProjectNode).name).join(',') === 'beta',
+      labels(roots).join(', '),
+    );
+    check(
+      'a pinned project renders with the pinned context value',
+      provider.getTreeItem(section!.projects[0]).contextValue === 'project.pinned',
+    );
+    check(
+      'an unpinned project keeps the plain one',
+      provider.getTreeItem(beta).contextValue === 'project',
+    );
+    check(
+      'the section is the parent of a pinned project',
+      provider.getParent(section!.projects[0]) === section,
+    );
+    check(
+      'a session under a pinned project still resolves its project',
+      provider.getParent(section!.projects[0].sessions[0]) === section!.projects[0],
+    );
+    provider.dispose();
+  }
+
+  console.log('\nA pinned folder with nothing running');
+  {
+    const pins = new PinStore(fakeMemento(['/work/delta']));
+    const provider = new RailTreeProvider(registry, pins);
+    const section = sectionOf(provider.getChildren());
+    check('placeholder row survives', section?.projects.length === 1);
+    check('named from the path', section?.projects[0]?.name === 'delta');
+    check('no sessions invented', section?.projects[0]?.sessions.length === 0);
+    check(
+      'row says so rather than looking empty',
+      provider.getTreeItem(section!.projects[0]).description === 'no sessions',
+    );
+
+    // A search is over sessions, so a row with none of them cannot match.
+    provider.setFilter('deploy');
+    const filtered = provider.getChildren();
+    check('placeholder drops out under a search', sectionOf(filtered) === undefined, labels(filtered).join(', '));
+    check(
+      'the matching project is still there',
+      filtered.filter((node) => node.kind === 'project').length === 1,
+      labels(filtered).join(', '),
+    );
+    provider.dispose();
+  }
+
+  console.log('\nSearch across pinned and unpinned');
+  {
+    const pins = new PinStore(fakeMemento(['/work/alpha']));
+    const provider = new RailTreeProvider(registry, pins);
+    provider.setFilter('the');
+    const roots = provider.getChildren();
+    const filterRow = roots[0];
+    check(
+      // 'the' hits all three titles: one pinned, two not.
+      'match count spans both groups',
+      filterRow?.kind === 'filter' && filterRow.matches === 3,
+      filterRow?.kind === 'filter' ? String(filterRow.matches) : 'no filter row',
+    );
+    provider.setFilter('deploy');
+    const pinnedOnly = provider.getChildren();
+    check(
+      'a pinned-only match keeps the section and empties the root list',
+      sectionOf(pinnedOnly)?.projects.length === 1 &&
+        pinnedOnly.filter((node) => node.kind === 'project').length === 0,
+      labels(pinnedOnly).join(', '),
+    );
+    provider.dispose();
+  }
+
+  console.log('\nPinning and unpinning at runtime');
+  {
+    const memento = fakeMemento();
+    const pins = new PinStore(memento);
+    const provider = new RailTreeProvider(registry, pins);
+    let events = 0;
+    provider.onDidChangeTreeData(() => {
+      events += 1;
+    });
+
+    await pins.pin('/work/beta');
+    check('the tree was told', events === 1, String(events));
+    check('the pin persisted', JSON.stringify(memento.get('sessionRail.pinnedProjects')) === '["/work/beta"]');
+    check('beta moved into the section', sectionOf(provider.getChildren())?.projects[0]?.name === 'beta');
+
+    await pins.pin('/work/beta/');
+    check('pinning the same folder twice is a no-op', events === 1 && pins.list().length === 1);
+
+    await pins.unpin('/work/beta');
+    check('unpin removed the section', sectionOf(provider.getChildren()) === undefined);
+    check('unpin persisted', JSON.stringify(memento.get('sessionRail.pinnedProjects')) === '[]');
+    provider.dispose();
+  }
+
+  console.log('\nStored value from another version');
+  {
+    const pins = new PinStore(fakeMemento({ alpha: true }));
+    check('a non-array degrades to no pins', pins.list().length === 0);
+    const mixed = new PinStore(fakeMemento(['/work/alpha', 42, '', '/work/alpha']));
+    check('junk entries and duplicates are dropped', mixed.list().join(',') === '/work/alpha');
+  }
+
+  console.log(`\n${failures === 0 ? 'pins-check: all checks passed' : `pins-check: ${failures} FAILED`}`);
+  if (failures > 0) {
+    process.exitCode = 1;
+  }
+}
+
+void main();

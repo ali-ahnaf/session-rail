@@ -8,6 +8,8 @@ A VS Code extension (`sessionRail`) that shows every Claude Code session running
 on the machine as a nested sidebar tree:
 
 ```
+Pinned (accordion, only when something is pinned)
+  └── project (a pinned folder, in pin order)
 project (grouped cwd)
   └── session (a running `claude` process)
         ├── subagent (arbitrarily nested)
@@ -15,7 +17,8 @@ project (grouped cwd)
 ```
 
 **It is a reader.** Every fact it displays is scraped from state Claude Code
-writes under `~/.claude`. It owns no data of its own and writes nothing back.
+writes under `~/.claude`, and it writes nothing back. The only thing it owns is
+which folders the user pinned — see the pins invariant.
 
 Stack: TypeScript (ES2022, CommonJS, strict), esbuild bundle → `dist/extension.js`,
 **zero runtime dependencies** — Node stdlib and the `vscode` API only. Do not add a
@@ -38,9 +41,10 @@ updating every consumer in the same commit.
 
 - **`src/model/types.ts`** — two families. `*Record`/`*Meta` mirror raw on-disk
   JSON; `*Node` are the normalized tree. Raw fields are optional unless observed
-  in every version, because `~/.claude` drifts (see Drift below). `FilterNode` is
-  the one exception to "nodes mirror disk": a presentation-only pseudo-node the
-  tree provider builds for the search row. It never appears in a `Snapshot`.
+  in every version, because `~/.claude` drifts (see Drift below). `FilterNode`
+  and `SectionNode` are the exceptions to "nodes mirror disk": presentation-only
+  pseudo-nodes the tree provider builds for the search row and the `Pinned`
+  accordion. Neither ever appears in a `Snapshot`.
 - **`src/scan/paths.ts`** — every `~/.claude` location. **Never join a
   `~/.claude` path by hand anywhere else.** `resolveProjectDir()` tries the
   `/`→`-` encoding, then falls back to scanning `projects/` and reading each
@@ -61,9 +65,11 @@ scan/          reads disk, owns all inference        (no VS Code UI concepts)
   tailer       byte-offset NDJSON reader
   registry     orchestrator: poll loop → Snapshot → onDidChange
 tree/          Snapshot → TreeItems                  (no filesystem access)
-  provider     TreeDataProvider, parent map for reveal(), the session filter
+  provider     TreeDataProvider, parent map for reveal(), the session filter,
+               the pinned/unpinned root split
   items        row construction, the visual grammar
   search       the input box that drives the filter (no field widget exists)
+  pins         pinned folders, persisted in globalState (the only state we keep)
 terminal/
   link         session pid → vscode.Terminal via ps ancestry
   resume       open-or-resume: focus the host terminal, else `claude --resume`
@@ -102,6 +108,26 @@ stays runnable outside the extension host.
   `src/workspace/explorer.ts` for the branch behavior the VS Code source actually
   has — worth reading before touching it, because three of its four cases are
   counter-intuitive.
+- **Pins are the only state this extension owns.** `src/tree/pins.ts` keeps them
+  in `context.globalState` — not a setting, because the values are absolute
+  machine paths managed entirely by clicking, and Settings Sync would carry them
+  to machines where they mean nothing (`setKeysForSync` is deliberately never
+  called). Two consequences worth keeping: a stored value from an older version
+  is narrowed like any `~/.claude` record (a non-array degrades to no pins rather
+  than throwing during activation), and the store updates memory and fires its
+  event *before* awaiting the write, because a failed `globalState` update costs
+  a pin at the next window whereas a tree that ignored the click looks broken
+  now. Pin order is display order — a list the user arranged must not reshuffle
+  itself when a session starts, which is why the section ignores the snapshot's
+  activity ordering.
+- **A pinned folder outlives its sessions.** `splitRoots()` synthesizes a
+  `ProjectNode` from the path when the snapshot has no project for a pinned dir
+  (nothing live, exited rows hidden, or the folder deleted), because a pin that
+  vanishes the moment the work stops is not a pin. It is built from the string
+  alone — the tree layer does no filesystem access, so a deleted folder is only
+  reported when something tries to use it (`newSession` refuses it by name).
+  Those placeholders drop out while a search is active: the search is over
+  sessions, and a row with none of them cannot match.
 - **One process per transcript, always.** A live session with no terminal in
   this window is running somewhere we can't see, and two processes on one
   transcript corrupt it. `terminal/resume.ts` therefore never sends a plain
@@ -210,6 +236,7 @@ npm run build            # production bundle → dist/extension.js
 npm run typecheck        # tsc --noEmit
 npm run lint             # eslint src
 npm run smoke            # scan layer vs. real ~/.claude, known historical sessions
+npm run check:pins       # pinned-folders view logic (deterministic, no disk)
 npm run check:registry   # registry end-to-end, prints the tree as the sidebar renders it
 npm run verify           # all of the above + build. Run this before declaring done.
 ```
@@ -227,6 +254,12 @@ agrees with assumptions that were already wrong once.
 - `scripts/registry-check.ts` — the registry executed for real against whatever
   sessions are live now, with `vscode` aliased to `scripts/vscode-stub.js`. Prints
   the rendered tree; fastest way to compare output against reality.
+- `scripts/pins-check.ts` — the one deterministic check, and the one place a
+  stand-in snapshot is allowed: pins are the extension's **own** state, so there
+  is no on-disk shape to drift and nothing machine-dependent to observe. It runs
+  the real `RailTreeProvider` and `PinStore` over a fake registry and an
+  in-memory `Memento`. Do not extend it to cover anything read from `~/.claude`;
+  that is what the two machine-dependent checks are for.
 
 Both are machine-dependent by design. A machine whose live sessions never spawned
 a nested agent reports that as a **coverage gap** rather than passing vacuously —
@@ -241,7 +274,7 @@ check into a passing no-op.
 - Commands: `sessionRail.` + `refresh`, `focusTerminal`, `newSession`,
   `newSessionHome`, `openTranscript`, `showInExplorer`, `revealFolder`,
   `copySessionId`, `stopSession`, `toggleTasks`, `showExited`, `hideExited`,
-  `searchSessions`, `clearSearch`, `showLog`.
+  `pinProject`, `unpinProject`, `searchSessions`, `clearSearch`, `showLog`.
 - `showInExplorer` is the `$(folder-opened)` inline icon at the right end of
   every project and session row (`inline@3`, after `newSession`/`focusTerminal`
   at `@1` and `openTranscript` at `@2`). It is **not** `revealFolder`, which is
@@ -259,9 +292,33 @@ check into a passing no-op.
   setting; the config listener flips the key, so the icon stays right when the
   setting is changed from the Settings UI instead.
 - `contextValue` strings the menus key off — only these are ever set:
-  `project`, `session.live`, `session.exited`, `agent`, `task`. State beyond
-  live/exited affects icon color only, never `contextValue`. The search row sets
-  **none** — it owns no menu, and every contributed menu is `viewItem ==`-gated.
+  `project`, `project.pinned`, `session.live`, `session.exited`, `agent`, `task`.
+  Session state beyond live/exited affects icon color only, never
+  `contextValue`; `project.pinned` is the one value that carries more than a node
+  kind, because a row must offer Pin or Unpin and never both. Every project-row
+  menu is therefore gated on `viewItem =~ /^project/` rather than
+  `viewItem == project` — add a menu for projects and it needs the regex, or it
+  silently disappears the moment the folder is pinned. The search row and the
+  `Pinned` section row set **none** — they own no menus.
+- **Pinning is `globalState`, not a setting and not a snapshot field.**
+  `pinProject`/`unpinProject` are the `$(pin)`/`$(pinned)` inline icon at
+  `inline@2` on every project row (the slot `openTranscript` uses on session
+  rows) plus a `navigation@5` context-menu entry; exactly one of the pair is ever
+  visible, gated on `viewItem == project` vs. `viewItem == project.pinned` —
+  the same show-the-state split as `showExited`/`hideExited`, but keyed on the
+  row rather than a context key. Both are node-driven, so both are hidden from
+  the command palette. Neither refreshes the registry: `PinStore` fires its own
+  change event, the provider re-renders the snapshot it already holds. The
+  `Pinned` section is a `SectionNode` built in `provider.recompute()`, which is
+  the single place root rows and the parent map are computed — they must stay in
+  lock-step, because the section object a pinned project's `getParent()` returns
+  has to be the very object `getChildren(undefined)` handed the view, or
+  `reveal()` breaks the way it did in History #2. Root order is fixed: search
+  row, `Pinned`, then everything unpinned. A pinned dir is matched against
+  `project.dir` through `normalizeDir` (trailing separators dropped), so
+  switching `groupBy` between `cwd` and `gitRoot` can leave a pin pointing at a
+  directory no project row uses any more; it renders as a placeholder rather
+  than disappearing.
 - **Search is provider state, not a setting.** A query is transient, so
   `RailTreeProvider.filter` holds it and it dies with the window; `setFilter`
   fires the tree change and never touches the registry, because the filter is

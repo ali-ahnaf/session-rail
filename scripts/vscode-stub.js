@@ -1,8 +1,9 @@
 /**
- * Minimal `vscode` module stand-in, so the scan layer can be exercised outside
- * the extension host. Only the members registry.ts actually touches are
- * implemented: EventEmitter, Disposable, and workspace.getConfiguration
- * (vscode.Event is type-only, so it needs no runtime value).
+ * Minimal `vscode` module stand-in, so the scan layer and the tree provider can
+ * be exercised outside the extension host. Only the members those modules
+ * actually touch are implemented: EventEmitter, Disposable,
+ * workspace.getConfiguration (vscode.Event is type-only, so it needs no runtime
+ * value), plus the handful of TreeItem/theming values items.ts constructs.
  *
  * Aliased in via esbuild's --alias:vscode flag. Test-only; never bundled into
  * dist/extension.js.
@@ -56,10 +57,57 @@ const workspace = {
   },
 };
 
+const TreeItemCollapsibleState = { None: 0, Collapsed: 1, Expanded: 2 };
+
+class TreeItem {
+  constructor(label, collapsibleState) {
+    this.label = label;
+    this.collapsibleState = collapsibleState;
+  }
+}
+
+class ThemeIcon {
+  constructor(id, color) {
+    this.id = id;
+    this.color = color;
+  }
+}
+
+class ThemeColor {
+  constructor(id) {
+    this.id = id;
+  }
+}
+
+class MarkdownString {
+  constructor(value) {
+    this.value = value;
+  }
+}
+
+/** Context keys the provider sets, so a check can assert on them. */
+const contextKeys = Object.create(null);
+
+const commands = {
+  executeCommand(command, key, value) {
+    if (command === 'setContext') {
+      contextKeys[key] = value;
+    }
+    return Promise.resolve(undefined);
+  },
+};
+
 module.exports = {
   Disposable,
   EventEmitter,
   workspace,
+  commands,
+  contextKeys,
+  TreeItem,
+  TreeItemCollapsibleState,
+  ThemeIcon,
+  ThemeColor,
+  MarkdownString,
   /** Test hook — not part of the real vscode API. */
   __setConfig(key, value) {
     overrides[key] = value;

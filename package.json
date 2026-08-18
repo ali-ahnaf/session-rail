@@ -11,7 +11,7 @@
     "agents",
     "subagents"
   ],
-  "version": "0.1.1",
+  "version": "0.2.0",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -35,8 +35,9 @@
     "vscode:prepublish": "npm run build",
     "package": "npx --yes @vscode/vsce package",
     "smoke": "esbuild scripts/smoke.ts --bundle --platform=node --target=node18 --format=cjs --external:vscode --outfile=.smoke.js --log-level=warning && node .smoke.js",
+    "check:pins": "esbuild scripts/pins-check.ts --bundle --platform=node --target=node18 --format=cjs --alias:vscode=./scripts/vscode-stub.js --outfile=.pinscheck.js --log-level=warning && node .pinscheck.js",
     "check:registry": "esbuild scripts/registry-check.ts --bundle --platform=node --target=node18 --format=cjs --alias:vscode=./scripts/vscode-stub.js --outfile=.regcheck.js --log-level=warning && node .regcheck.js",
-    "verify": "npm run typecheck && npm run lint && npm run smoke && npm run check:registry && npm run build"
+    "verify": "npm run typecheck && npm run lint && npm run smoke && npm run check:pins && npm run check:registry && npm run build"
   },
   "devDependencies": {
     "@types/vscode": "^1.90.0",
@@ -143,6 +144,18 @@
         "icon": "$(eye)"
       },
       {
+        "command": "sessionRail.pinProject",
+        "title": "Pin Folder",
+        "category": "Session Rail",
+        "icon": "$(pin)"
+      },
+      {
+        "command": "sessionRail.unpinProject",
+        "title": "Unpin Folder",
+        "category": "Session Rail",
+        "icon": "$(pinned)"
+      },
+      {
         "command": "sessionRail.searchSessions",
         "title": "Search Sessions",
         "category": "Session Rail",
@@ -196,7 +209,7 @@
       "view/item/context": [
         {
           "command": "sessionRail.newSession",
-          "when": "view == sessionRail.tree && viewItem == project",
+          "when": "view == sessionRail.tree && viewItem =~ /^project/",
           "group": "inline@1"
         },
         {
@@ -210,13 +223,23 @@
           "group": "inline@2"
         },
         {
+          "command": "sessionRail.pinProject",
+          "when": "view == sessionRail.tree && viewItem == project",
+          "group": "inline@2"
+        },
+        {
+          "command": "sessionRail.unpinProject",
+          "when": "view == sessionRail.tree && viewItem == project.pinned",
+          "group": "inline@2"
+        },
+        {
           "command": "sessionRail.showInExplorer",
-          "when": "view == sessionRail.tree && (viewItem == project || viewItem == session.live || viewItem == session.exited)",
+          "when": "view == sessionRail.tree && (viewItem =~ /^project/ || viewItem == session.live || viewItem == session.exited)",
           "group": "inline@3"
         },
         {
           "command": "sessionRail.newSession",
-          "when": "view == sessionRail.tree && viewItem == project",
+          "when": "view == sessionRail.tree && viewItem =~ /^project/",
           "group": "navigation@1"
         },
         {
@@ -231,13 +254,23 @@
         },
         {
           "command": "sessionRail.showInExplorer",
-          "when": "view == sessionRail.tree && (viewItem == project || viewItem == session.live || viewItem == session.exited)",
+          "when": "view == sessionRail.tree && (viewItem =~ /^project/ || viewItem == session.live || viewItem == session.exited)",
           "group": "navigation@3"
         },
         {
           "command": "sessionRail.revealFolder",
-          "when": "view == sessionRail.tree && (viewItem == project || viewItem == session.live || viewItem == session.exited)",
+          "when": "view == sessionRail.tree && (viewItem =~ /^project/ || viewItem == session.live || viewItem == session.exited)",
           "group": "navigation@4"
+        },
+        {
+          "command": "sessionRail.pinProject",
+          "when": "view == sessionRail.tree && viewItem == project",
+          "group": "navigation@5"
+        },
+        {
+          "command": "sessionRail.unpinProject",
+          "when": "view == sessionRail.tree && viewItem == project.pinned",
+          "group": "navigation@5"
         },
         {
           "command": "sessionRail.copySessionId",
@@ -265,6 +298,14 @@
         },
         {
           "command": "sessionRail.showInExplorer",
+          "when": "false"
+        },
+        {
+          "command": "sessionRail.pinProject",
+          "when": "false"
+        },
+        {
+          "command": "sessionRail.unpinProject",
           "when": "false"
         },
         {

@@ -4,3 +4,4 @@ dist/
 .DS_Store
 .smoke.js
 .regcheck.js
+.pinscheck.js

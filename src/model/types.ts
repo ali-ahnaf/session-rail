@@ -202,7 +202,31 @@ export interface FilterNode {
   matches: number;
 }
 
-export type RailNode = ProjectNode | SessionNode | AgentNode | TaskNode | FilterNode;
+/**
+ * The `Pinned` accordion: a pseudo-node with no on-disk counterpart, rendered
+ * as a root row above the unpinned projects and holding the pinned ones.
+ *
+ * Like `FilterNode` this is presentation state — the tree provider builds it
+ * from the pin store, the scan layer knows nothing about it, and it never
+ * appears in a `Snapshot`. A pinned directory the snapshot has no sessions for
+ * still gets a `ProjectNode` here, synthesized from the path, so a pin stays
+ * reachable (and startable) when nothing is running in it.
+ */
+export interface SectionNode {
+  kind: 'section';
+  /** Stable id — there is only ever one section. */
+  id: 'pinned';
+  label: string;
+  projects: ProjectNode[];
+}
+
+export type RailNode =
+  | ProjectNode
+  | SessionNode
+  | AgentNode
+  | TaskNode
+  | FilterNode
+  | SectionNode;
 
 /** Immutable view of the whole tree at one instant. */
 export interface Snapshot {

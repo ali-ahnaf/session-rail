@@ -61,7 +61,8 @@ Same tool, both worlds.
 The tree has four levels:
 
 - **Project** — a working directory (or git root, per `sessionRail.groupBy`) with
-  one or more sessions.
+  one or more sessions. Pinned ones are lifted into a **Pinned** section at the
+  top — see [Pinned folders](#pinned-folders).
 - **Session** — one `claude` process, live or past.
 - **Subagent** — a Task/Agent-tool invocation, nested under whatever spawned it,
   to any depth.
@@ -76,7 +77,8 @@ description).
 
 | Row | Label | Grey description |
 | --- | --- | --- |
-| Project | folder name | number of **live** sessions, or `4 past` when none are running |
+| Project | folder name | number of **live** sessions, `4 past` when none are running, or `no sessions` for a pinned folder with nothing in the tree |
+| Pinned (section) | `Pinned` | how many folders are pinned |
 | Session (live) | Claude Code's own session title, or its derived name until a title exists | `name · branch · model · effort · timer` — timer is the elapsed run time while generating, `idle 04:12` otherwise |
 | Session (past) | same | `exited · 3d ago` |
 | Subagent | agent type, plugin prefix stripped | `d2` (spawn depth) plus its run time once finished |
@@ -109,6 +111,7 @@ disk, so no row is currently colored with it.
 | Icon | On | Does |
 | --- | --- | --- |
 | `+` | project | starts a new `claude` in that directory |
+| pin / pinned | project | Pin Folder / Unpin Folder |
 | terminal | any session | Open Terminal |
 | output | past sessions | opens the transcript viewer |
 | folder-opened | project, session | Show in Explorer |
@@ -120,6 +123,8 @@ disk, so no row is currently colored with it.
 - **Reveal Working Folder** — opens the folder in Finder/your file manager. A
   different action from Show in Explorer; deliberately menu-only.
 - **Copy Session ID**.
+- **Pin Folder** / **Unpin Folder** — project rows; see
+  [Pinned folders](#pinned-folders).
 - **Stop Session** — SIGTERM, behind a modal confirm. Live rows only.
 
 **View title bar**: search · clear search (appears only while a search is
@@ -142,6 +147,23 @@ live session whose terminal this window cannot see, Session Rail asks first:
 Set `sessionRail.openLiveSession` to `adopt` or `fork` to skip the prompt. A
 session already hosted in this window is simply focused; an exited session always
 resumes in place with no prompt.
+
+## Pinned folders
+
+**Pin Folder** (the pin icon on any project row) lifts that folder into a
+**Pinned** accordion at the top of the tree. Unpin from the same spot.
+
+- Pinned folders keep the order you pinned them in — the section does not
+  reshuffle itself when a session starts somewhere.
+- **A pin outlives its sessions.** Pin a folder and it stays listed even with
+  nothing running in it, showing `no sessions`, with its `+` ready to start one.
+  That is the point: it is a shortcut to the folders you work in.
+- Collapse the section and it stays collapsed.
+- Pins live in the extension's own storage, per machine — they are not a setting,
+  so they are never synced to another machine, where the paths would mean
+  nothing.
+- A pinned folder that no longer exists still shows; starting a session in it
+  tells you it is gone.
 
 ## Searching
 
@@ -218,8 +240,9 @@ match. Please open an issue with the version.
 
 ## What it writes
 
-Nothing under `~/.claude` — no writes, no moves, no deletes. Three actions do
-have effects outside it, all user-initiated:
+Nothing under `~/.claude` — no writes, no moves, no deletes. The one thing it
+stores is your list of pinned folders, in VS Code's own per-machine extension
+storage. Three actions have effects outside it, all user-initiated:
 
 - **Stop Session** sends SIGTERM to the session's process (modal confirm first).
 - **New Session Here** / **New Session in Workspace Folder** open a terminal and

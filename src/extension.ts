@@ -20,6 +20,7 @@ import { RailStatusBar } from './status/statusBar';
 import { clearAncestryCache } from './terminal/link';
 import { clearOpenedTerminals, forgetTerminal, openSession, startSession } from './terminal/resume';
 import { TranscriptPanel } from './transcript/panel';
+import { PinStore } from './tree/pins';
 import { RailTreeProvider } from './tree/provider';
 import { disposeSearch, promptSearch } from './tree/search';
 import { log } from './util/log';
@@ -36,7 +37,10 @@ export function activate(context: vscode.ExtensionContext): void {
   syncExitedContext();
 
   const registry = createRegistry();
-  const provider = new RailTreeProvider(registry);
+  // Pins outlive the window, so they hang off the extension's own globalState —
+  // the only state this extension keeps. See tree/pins.ts for why not a setting.
+  const pins = new PinStore(context.globalState);
+  const provider = new RailTreeProvider(registry, pins);
   const statusBar = new RailStatusBar(registry);
 
   const view = vscode.window.createTreeView<RailNode>('sessionRail.tree', {
@@ -50,9 +54,10 @@ export function activate(context: vscode.ExtensionContext): void {
     new vscode.Disposable(() => disposeSearch()),
     registry,
     provider,
+    pins,
     statusBar,
     view,
-    ...registerCommands(context, registry, provider),
+    ...registerCommands(context, registry, provider, pins),
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration(`${CONFIG_SECTION}.claudeHome`)) {
         applyClaudeHome();
@@ -88,6 +93,7 @@ function registerCommands(
   context: vscode.ExtensionContext,
   registry: RailRegistry,
   provider: RailTreeProvider,
+  pins: PinStore,
 ): vscode.Disposable[] {
   const register = (id: string, handler: (...args: unknown[]) => unknown): vscode.Disposable =>
     vscode.commands.registerCommand(id, handler);
@@ -253,6 +259,25 @@ function registerCommands(
     // Both the search row and the view-title icon land here. The filter is
     // provider state, so this needs no registry refresh — the next poll
     // re-filters the fresh snapshot on its own.
+    // Pins are pure UI state: the store fires its own change event and the
+    // provider re-renders the snapshot it already holds, so neither command
+    // needs a registry refresh.
+    register('sessionRail.pinProject', async (node) => {
+      const project = asProject(node);
+      if (!project) {
+        return;
+      }
+      await pins.pin(project.dir);
+    }),
+
+    register('sessionRail.unpinProject', async (node) => {
+      const project = asProject(node);
+      if (!project) {
+        return;
+      }
+      await pins.unpin(project.dir);
+    }),
+
     register('sessionRail.searchSessions', () => promptSearch(provider)),
     register('sessionRail.clearSearch', () => provider.setFilter('')),
 

@@ -11,7 +11,10 @@ docs/**
 scripts/**
 .smoke.js
 .regcheck.js
+.pinscheck.js
 package-lock.json
 media/demo.mp4
 .claude/**
 CLAUDE.md
+.DS_Store
+**/.DS_Store
