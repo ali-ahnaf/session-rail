@@ -123,8 +123,10 @@ disk, so no row is currently colored with it.
 - **Stop Session** — SIGTERM, behind a modal confirm. Live rows only.
 
 **View title bar**: search · clear search (appears only while a search is
-active) · `+` new session in your home directory · refresh · show/hide exited
-(one toggle, two icons, so the icon shows the current state).
+active) · `+` new session in this window's folder (it asks which one in a
+multi-root workspace, and falls back to your home directory when no folder is
+open) · refresh · show/hide exited (one toggle, two icons, so the icon shows the
+current state).
 
 ## Opening a session that is running somewhere else
 
@@ -220,7 +222,7 @@ Nothing under `~/.claude` — no writes, no moves, no deletes. Three actions do
 have effects outside it, all user-initiated:
 
 - **Stop Session** sends SIGTERM to the session's process (modal confirm first).
-- **New Session Here** / **New Session in Home Directory** open a terminal and
+- **New Session Here** / **New Session in Workspace Folder** open a terminal and
   run `claude` in it — that process writes its own state, as any session does.
 - **Show in Explorer** appends a workspace folder, which VS Code persists to your
   `.code-workspace` (or an untitled workspace). It is **add-only** — it never

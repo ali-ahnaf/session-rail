@@ -96,11 +96,12 @@ stays runnable outside the extension host.
   Hence **add-only, never toggle** — a stray click must not remove a root the
   user arranged by hand, so a directory already reachable from a root is only
   revealed. Two clicks are gated behind a modal confirm because they are
-  expensive rather than wrong: `os.homedir()` (which `newSessionHome` makes a
-  perfectly ordinary row to click, and which puts a recursive watcher over the
-  whole home dir) and the filesystem root. See `src/workspace/explorer.ts` for
-  the branch behavior the VS Code source actually has — worth reading before
-  touching it, because three of its four cases are counter-intuitive.
+  expensive rather than wrong: `os.homedir()` (an ordinary row to click —
+  `newSessionHome` still falls back to it when no folder is open — and one that
+  puts a recursive watcher over the whole home dir) and the filesystem root. See
+  `src/workspace/explorer.ts` for the branch behavior the VS Code source actually
+  has — worth reading before touching it, because three of its four cases are
+  counter-intuitive.
 - **One process per transcript, always.** A live session with no terminal in
   this window is running somewhere we can't see, and two processes on one
   transcript corrupt it. `terminal/resume.ts` therefore never sends a plain
@@ -301,8 +302,15 @@ check into a passing no-op.
   swapped for the window default.
 - `newSessionHome` is the same `+` in the view title bar, for a session that
   belongs to no project row yet. It shares `startSession` and differs only in
-  the directory: `os.homedir()`. It takes no node, so unlike the other
-  node-driven commands it stays visible in the command palette.
+  how the directory is chosen — the window's own folder, because that is what
+  the header `+` means in practice: no `workspaceFolders` → `os.homedir()`; one
+  folder → its `uri.fsPath`, no prompt; two or more →
+  `window.showWorkspaceFolderPick`, and Escape starts nothing. The one-folder
+  case is branched explicitly so that an unambiguous window can never prompt,
+  whatever the pick does internally. It takes no node, so unlike the other
+  node-driven commands it stays visible in the command palette (the title is
+  "New Session in Workspace Folder"; the id keeps the `Home` spelling so existing
+  keybindings survive).
 - `focusTerminal` is the click action on every session row, live or exited, and
   never dead-ends: it focuses the hosting terminal if this window has one, else
   reuses the terminal it opened earlier for that session, else opens a new one

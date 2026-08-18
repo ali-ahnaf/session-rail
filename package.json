@@ -94,7 +94,7 @@
       },
       {
         "command": "sessionRail.newSessionHome",
-        "title": "New Session in Home Directory",
+        "title": "New Session in Workspace Folder",
         "category": "Session Rail",
         "icon": "$(add)"
       },

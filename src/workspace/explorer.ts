@@ -95,10 +95,11 @@ function isDirectory(dir: string): boolean {
  * Two cases are expensive enough to ask about first; everything else just
  * happens, because a local window keeps its editors and terminals.
  *
- *  - a huge root. `newSessionHome` puts sessions in `os.homedir()`, so a home
- *    row is a normal thing to click — and adding it starts a recursive file
- *    watcher over the whole home directory, which can thrash the window. The
- *    filesystem root is the same mistake, larger.
+ *  - a huge root. A home row is an ordinary thing to click — `newSessionHome`
+ *    falls back to `os.homedir()` in a window with no folder open, and a session
+ *    started there gets a home project row — and adding it starts a recursive
+ *    file watcher over the whole home directory, which can thrash the window.
+ *    The filesystem root is the same mistake, larger.
  *  - a remote window that is not yet multi-root, which is the one configuration
  *    where the add reloads the window (`doEnterWorkspace` ends in
  *    `hostService.reload()` when there is a remote authority).

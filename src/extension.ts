@@ -142,13 +142,40 @@ function registerCommands(
     }),
 
     // The view-title `+`. Takes no node, so it needs a directory of its own:
-    // the home directory, the one place that is always there and belongs to no
-    // project in the tree.
-    register('sessionRail.newSessionHome', () => {
-      const home = homedir();
-      if (startSession(home, basename(home) || 'home') === 'missing-dir') {
+    // the folder this window is open at, which is what a session started from
+    // the header almost always means. Multi-root windows are ambiguous, so ask;
+    // a window with no folder open falls back to the home directory, the one
+    // place that is always there and belongs to no project in the tree.
+    register('sessionRail.newSessionHome', async () => {
+      const folders = vscode.workspace.workspaceFolders ?? [];
+      let dir: string;
+      let label: string;
+
+      if (folders.length === 0) {
+        const home = homedir();
+        dir = home;
+        label = basename(home) || 'home';
+      } else if (folders.length === 1) {
+        // One folder is unambiguous, so it must never prompt — hence the
+        // explicit branch rather than leaving it to the pick.
+        dir = folders[0].uri.fsPath;
+        label = folders[0].name;
+      } else {
+        const picked = await vscode.window.showWorkspaceFolderPick({
+          placeHolder: 'Start a Claude session in…',
+        });
+        if (!picked) {
+          return;
+        }
+        dir = picked.uri.fsPath;
+        label = picked.name;
+      }
+
+      // A virtual-filesystem root has no usable local path; `startSession`'s
+      // existence check turns that into the same warning as a deleted folder.
+      if (startSession(dir, label) === 'missing-dir') {
         void vscode.window.showWarningMessage(
-          `Cannot start a session in ${home}: the folder does not exist.`,
+          `Cannot start a session in ${dir}: the folder does not exist.`,
         );
       }
     }),
