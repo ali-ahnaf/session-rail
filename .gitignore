@@ -5,3 +5,4 @@ dist/
 .smoke.js
 .regcheck.js
 .pinscheck.js
+.stickycheck.js

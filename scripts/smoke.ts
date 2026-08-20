@@ -6,6 +6,15 @@
  * c5476e2d the agent a316978cce571e28e is a depth-2 child of ac4f0c9f15b73b541,
  * confirmed by matching toolUseId before any of this code existed.
  *
+ * That truth lives on one machine, so its location is not hardcoded — export the
+ * four SMOKE_TRUTH_* vars below to run it. Unset, the section reports a coverage
+ * gap instead of failing (a machine without the fixture is not a broken build):
+ *
+ *   SMOKE_TRUTH_CWD=<project cwd of the session>
+ *   SMOKE_TRUTH_SESSION=c5476e2d-a88c-46a0-b898-0b81d3204bf7
+ *   SMOKE_TRUTH_PARENT=ac4f0c9f15b73b541
+ *   SMOKE_TRUTH_CHILD=a316978cce571e28e
+ *
  * Run: npm run smoke
  */
 
@@ -37,6 +46,11 @@ function check(label: string, ok: boolean, detail = ''): void {
 
 function section(title: string): void {
   console.log(`\n${title}`);
+}
+
+/** A check that could not run here. Reported, never counted as a failure. */
+function gap(label: string, detail = ''): void {
+  console.log(`  [skip] ${label}${detail ? ` — ${detail}` : ''}`);
 }
 
 /**
@@ -169,91 +183,100 @@ for (const record of records.slice(0, 5)) {
 
 section('Agent forest — hand-verified ground truth');
 
-const TRUTH_CWD = '/Users/aliahnaf/Sharebox/sharebox-webadmin/web-automation';
-const TRUTH_SESSION = 'c5476e2d-a88c-46a0-b898-0b81d3204bf7';
-const TRUTH_CHILD = 'a316978cce571e28e';
-const TRUTH_PARENT = 'ac4f0c9f15b73b541';
+const TRUTH_CWD = process.env.SMOKE_TRUTH_CWD;
+const TRUTH_SESSION = process.env.SMOKE_TRUTH_SESSION;
+const TRUTH_CHILD = process.env.SMOKE_TRUTH_CHILD;
+const TRUTH_PARENT = process.env.SMOKE_TRUTH_PARENT;
 
-const metas = readAgentMetas(TRUTH_CWD, TRUTH_SESSION);
-check('reads agent metas', metas.size > 0, `${metas.size} agents`);
-
-const depths = [...metas.values()].map((m) => m.spawnDepth);
-check('sees a depth-2 agent', depths.includes(2), `depths present: ${[...new Set(depths)].sort().join(', ')}`);
-
-const { index: spawnIndex, completed } = scanSpawns(TRUTH_CWD, TRUTH_SESSION);
-check('builds a spawn index from transcripts', spawnIndex.size > 0, `${spawnIndex.size} toolUseIds`);
-check(
-  'index covers every agent’s spawning toolUseId',
-  [...metas.values()].every((m) => spawnIndex.has(m.toolUseId)),
-  `${[...metas.values()].filter((m) => spawnIndex.has(m.toolUseId)).length}/${metas.size} covered`,
-);
-check('records tool_result completions', completed.size > 0, `${completed.size} completed`);
-
-const forest = buildAgentForest(TRUTH_CWD, TRUTH_SESSION, metas, spawnIndex);
-check('forest has roots', forest.length > 0, `${forest.length} roots`);
-
-let total = 0;
-walkAgents(forest, () => {
-  total += 1;
-});
-check('forest contains every agent exactly once', total === metas.size, `${total} of ${metas.size}`);
-
-const child = findAgent(forest, TRUTH_CHILD);
-check('depth-2 agent is present in the forest', child !== undefined);
-
-const realParent = parentOf(forest, TRUTH_CHILD);
-check(
-  'depth-2 agent nests under the correct parent',
-  realParent?.agentId === TRUTH_PARENT,
-  realParent ? `parent=${realParent.agentId}` : 'no parent — attached at root',
-);
-
-check(
-  'no depth-2 agent is left at the root',
-  !forest.some((a) => a.spawnDepth > 1),
-  `roots: ${forest.map((a) => `${a.agentType}(d${a.spawnDepth})`).join(', ')}`,
-);
-
-section('Tasks');
-
-const tasks = readTasks(TRUTH_SESSION);
-check('reads tasks for a session that has them', tasks.length > 0, `${tasks.length} tasks`);
-check(
-  'task ids are namespaced by session',
-  tasks.every((t) => t.id.startsWith(`${TRUTH_SESSION}:`)),
-);
-check(
-  'statuses normalize to the closed set',
-  tasks.every((t) => ['pending', 'in_progress', 'completed'].includes(t.status)),
-  [...new Set(tasks.map((t) => t.status))].join(', '),
-);
-check('missing task dir yields no tasks', readTasks('no-such-session-id').length === 0);
-
-section('Tailer');
-
-const tailTarget = sessionTranscriptPath(TRUTH_CWD, TRUTH_SESSION);
-if (tailTarget && fs.existsSync(tailTarget)) {
-  const sizeMb = (fs.statSync(tailTarget).size / 1024 / 1024).toFixed(1);
-  const tailer = new Tailer();
-
-  const first = tailer.readDelta(tailTarget);
-  check('cold read returns records', first.length > 0, `${first.length} records from ${sizeMb} MB`);
-
-  const second = tailer.readDelta(tailTarget);
-  check('second read returns nothing new', second.length === 0, `${second.length} records`);
-
-  tailer.reset(tailTarget);
-  const third = tailer.readDelta(tailTarget);
-  check('reset replays from the start', third.length === first.length);
-
-  const parsedAll = first.every((r: TranscriptRecord) => typeof r === 'object' && r !== null);
-  check('every returned record is an object', parsedAll);
-
-  tailer.dispose();
+if (!TRUTH_CWD || !TRUTH_SESSION || !TRUTH_CHILD || !TRUTH_PARENT) {
+  gap(
+    'agent forest, tasks, and tailer',
+    'set SMOKE_TRUTH_CWD/_SESSION/_PARENT/_CHILD to a session with a depth-2 agent (see header)',
+  );
 } else {
-  check('transcript exists to tail', false, 'not found');
+  const metas = readAgentMetas(TRUTH_CWD, TRUTH_SESSION);
+  check('reads agent metas', metas.size > 0, `${metas.size} agents`);
+
+  const depths = [...metas.values()].map((m) => m.spawnDepth);
+  check('sees a depth-2 agent', depths.includes(2), `depths present: ${[...new Set(depths)].sort().join(', ')}`);
+
+  const { index: spawnIndex, completed } = scanSpawns(TRUTH_CWD, TRUTH_SESSION);
+  check('builds a spawn index from transcripts', spawnIndex.size > 0, `${spawnIndex.size} toolUseIds`);
+  check(
+    'index covers every agent\u2019s spawning toolUseId',
+    [...metas.values()].every((m) => spawnIndex.has(m.toolUseId)),
+    `${[...metas.values()].filter((m) => spawnIndex.has(m.toolUseId)).length}/${metas.size} covered`,
+  );
+  check('records tool_result completions', completed.size > 0, `${completed.size} completed`);
+
+  const forest = buildAgentForest(TRUTH_CWD, TRUTH_SESSION, metas, spawnIndex);
+  check('forest has roots', forest.length > 0, `${forest.length} roots`);
+
+  let total = 0;
+  walkAgents(forest, () => {
+    total += 1;
+  });
+  check('forest contains every agent exactly once', total === metas.size, `${total} of ${metas.size}`);
+
+  const child = findAgent(forest, TRUTH_CHILD);
+  check('depth-2 agent is present in the forest', child !== undefined);
+
+  const realParent = parentOf(forest, TRUTH_CHILD);
+  check(
+    'depth-2 agent nests under the correct parent',
+    realParent?.agentId === TRUTH_PARENT,
+    realParent ? `parent=${realParent.agentId}` : 'no parent — attached at root',
+  );
+
+  check(
+    'no depth-2 agent is left at the root',
+    !forest.some((a) => a.spawnDepth > 1),
+    `roots: ${forest.map((a) => `${a.agentType}(d${a.spawnDepth})`).join(', ')}`,
+  );
+
+  section('Tasks');
+
+  const tasks = readTasks(TRUTH_SESSION);
+  check('reads tasks for a session that has them', tasks.length > 0, `${tasks.length} tasks`);
+  check(
+    'task ids are namespaced by session',
+    tasks.every((t) => t.id.startsWith(`${TRUTH_SESSION}:`)),
+  );
+  check(
+    'statuses normalize to the closed set',
+    tasks.every((t) => ['pending', 'in_progress', 'completed'].includes(t.status)),
+    [...new Set(tasks.map((t) => t.status))].join(', '),
+  );
+
+  section('Tailer');
+
+  const tailTarget = sessionTranscriptPath(TRUTH_CWD, TRUTH_SESSION);
+  if (tailTarget && fs.existsSync(tailTarget)) {
+    const sizeMb = (fs.statSync(tailTarget).size / 1024 / 1024).toFixed(1);
+    const tailer = new Tailer();
+
+    const first = tailer.readDelta(tailTarget);
+    check('cold read returns records', first.length > 0, `${first.length} records from ${sizeMb} MB`);
+
+    const second = tailer.readDelta(tailTarget);
+    check('second read returns nothing new', second.length === 0, `${second.length} records`);
+
+    tailer.reset(tailTarget);
+    const third = tailer.readDelta(tailTarget);
+    check('reset replays from the start', third.length === first.length);
+
+    const parsedAll = first.every((r: TranscriptRecord) => typeof r === 'object' && r !== null);
+    check('every returned record is an object', parsedAll);
+
+    tailer.dispose();
+  } else {
+    check('transcript exists to tail', false, 'not found');
+  }
 }
 
+section('Machine-independent checks');
+
+check('missing task dir yields no tasks', readTasks('no-such-session-id').length === 0);
 check('tailing a nonexistent file is safe', new Tailer().readDelta('/tmp/session-rail-does-not-exist.jsonl').length === 0);
 
 // ─────────────────────────────────────────────────────────────

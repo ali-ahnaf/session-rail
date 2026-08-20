@@ -1,8 +1,12 @@
 /**
  * Presentation layer for the session rail tree.
  *
- * Turns a `RailNode` into a `vscode.TreeItem`. Pure — no filesystem access,
- * no registry calls, no knowledge of how the tree is wired up. `RailTreeItem`
+ * Turns a `RailNode` into a `vscode.TreeItem`. No filesystem access, no registry
+ * calls, no knowledge of how the tree is wired up. The one thing it reads that
+ * is not on the node or in `RenderOptions` is `workbench.reduceMotion`, via
+ * `motion.ts` — a user preference rather than tree state, shared with the view
+ * header bar, and read at render time by design (see the motion invariant in
+ * CLAUDE.md). `RailTreeItem`
  * keeps a reference back to the node it was built from so command handlers
  * (and future debugging) can recover the underlying data.
  */
@@ -19,13 +23,18 @@ import {
   SessionState,
   TaskNode,
 } from '../model/types';
+import { motionAllowed } from './motion';
 
 const FOCUS_TERMINAL_COMMAND = 'sessionRail.focusTerminal';
 const SEARCH_COMMAND = 'sessionRail.searchSessions';
 
 /**
- * The little presentation state that can't be read off a node. Passed in by the
- * provider rather than stored here, so this module stays pure.
+ * The little presentation state that can't be read off a node, and that the
+ * provider is the only one who knows. Passed in rather than stored here, so this
+ * module keeps no state of its own. A user preference like
+ * `workbench.reduceMotion` is deliberately NOT a field here — the provider has
+ * no more claim on it than this module does, and threading it through would mean
+ * every caller of `toTreeItem` had to remember to.
  */
 export interface RenderOptions {
   /**
@@ -166,20 +175,40 @@ function buildProjectItem(node: ProjectNode, options: RenderOptions): RailTreeIt
         : vscode.TreeItemCollapsibleState.Collapsed;
 
   const pinned = options.pinned === true;
+  // Over the sessions this row is rendering, which is the filtered list while a
+  // search is active — so a search that hides the working session hides its
+  // count and its spinner too, while the header bar (which reads the unfiltered
+  // snapshot) keeps spinning.
+  const working = node.sessions.filter((session) => session.state === 'generating').length;
   const item = new RailTreeItem(node.name, collapsibleState, node);
   item.id = nodeKey(node);
+  const description: string[] = [];
   if (node.liveCount > 0) {
-    item.description = String(node.liveCount);
+    description.push(String(node.liveCount));
   } else if (node.sessions.length > 0) {
     // A bare number here would read as a live count, which is exactly what it
     // is not.
-    item.description = `${node.sessions.length} past`;
+    description.push(`${node.sessions.length} past`);
   } else if (pinned) {
     // Only a pinned row can be here with nothing under it, and a bare label
     // would look like a folder whose sessions failed to load.
-    item.description = 'no sessions';
+    description.push('no sessions');
   }
-  item.iconPath = new vscode.ThemeIcon(pinned ? 'pinned' : 'folder');
+  if (working > 0) {
+    // Text, not motion — this is the half of the working signal that survives
+    // `reduceMotion` and tells a collapsed row how much is in flight.
+    description.push(`${working} working`);
+  }
+  if (description.length > 0) {
+    item.description = description.join(' \u00b7 ');
+  }
+  // While anything under here is generating, the spinner takes the icon slot —
+  // so a pinned project temporarily stops advertising its pin. Pin state stays
+  // readable from the `Pinned` section, the context menu, and `contextValue`.
+  item.iconPath =
+    working > 0 && motionAllowed()
+      ? new vscode.ThemeIcon('loading~spin', new vscode.ThemeColor('sessionRail.working'))
+      : new vscode.ThemeIcon(pinned ? 'pinned' : 'folder');
   // The one place a contextValue carries more than a node kind: the menus need
   // to offer Pin or Unpin, never both.
   item.contextValue = pinned ? 'project.pinned' : 'project';
@@ -206,7 +235,7 @@ function buildSessionItem(node: SessionNode): RailTreeItem {
     item.description = description;
   }
   item.iconPath = new vscode.ThemeIcon(
-    'circle-filled',
+    node.state === 'generating' && motionAllowed() ? 'loading~spin' : 'circle-filled',
     new vscode.ThemeColor(sessionStateColor(node.state)),
   );
   item.contextValue = node.alive ? 'session.live' : 'session.exited';
@@ -294,6 +323,11 @@ function sessionTooltip(node: SessionNode): vscode.MarkdownString {
     lines.push(`- **Version**: ${node.version}`);
   }
   lines.push(`- **State**: ${node.state}`);
+  if (node.state === 'generating') {
+    // The state in words, so the row is readable without seeing motion or
+    // separating amber from green.
+    lines.push('- **Activity**: working');
+  }
   if (node.source === 'transcript') {
     lines.push('', 'Recovered from its transcript — the session registry no longer has it.');
   }
@@ -312,7 +346,10 @@ function buildAgentItem(node: AgentNode): RailTreeItem {
   item.description = agentDescription(node);
   item.iconPath =
     node.state === 'running'
-      ? new vscode.ThemeIcon('circle-filled', new vscode.ThemeColor('sessionRail.working'))
+      ? new vscode.ThemeIcon(
+          motionAllowed() ? 'loading~spin' : 'circle-filled',
+          new vscode.ThemeColor('sessionRail.working'),
+        )
       : new vscode.ThemeIcon('pass', new vscode.ThemeColor('sessionRail.live'));
   item.contextValue = 'agent';
   item.tooltip = agentTooltip(node);
@@ -336,6 +373,9 @@ function agentTooltip(node: AgentNode): vscode.MarkdownString {
   }
   lines.push(`- **Spawn depth**: ${node.spawnDepth}`);
   lines.push(`- **Tool use ID**: ${node.toolUseId}`);
+  if (node.state === 'running') {
+    lines.push('- **Activity**: working');
+  }
 
   return new vscode.MarkdownString(lines.join('\n'));
 }

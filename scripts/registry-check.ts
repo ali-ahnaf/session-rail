@@ -9,8 +9,9 @@
  * Run: npm run check:registry
  */
 
-import { walkAgents, type AgentNode, type Snapshot } from '../src/model/types';
+import { walkAgents, type AgentNode, type RailNode, type Snapshot } from '../src/model/types';
 import { createRegistry } from '../src/scan/registry';
+import { toTreeItem } from '../src/tree/items';
 
 const vscodeStub = require('./vscode-stub.js') as {
   __setConfig(key: string, value: unknown): void;
@@ -46,9 +47,21 @@ function countAgents(snapshot: Snapshot): { total: number; running: number; maxD
   return { total, running, maxDepth };
 }
 
+/**
+ * The icon the tree would actually render for a node, taken from the real
+ * presentation layer rather than restated here — a hand-copied mapping would
+ * agree with itself while disagreeing with the sidebar.
+ */
+function iconOf(node: RailNode): string {
+  const icon = toTreeItem(node).iconPath as { id?: string; color?: { id?: string } } | undefined;
+  return `${icon?.id ?? 'none'}${icon?.color?.id !== undefined ? ` ${icon.color.id}` : ''}`;
+}
+
 function render(snapshot: Snapshot): void {
   for (const project of snapshot.projects) {
-    console.log(`\n  ${project.name}  (${project.liveCount} live)`);
+    console.log(
+      `\n  ${project.name}  ${String(toTreeItem(project).description ?? '')}  [${iconOf(project)}]`,
+    );
     for (const session of project.sessions) {
       const bits = [session.state, session.branch, session.model, session.effort]
         .filter(Boolean)
@@ -61,13 +74,13 @@ function render(snapshot: Snapshot): void {
       console.log(
         `    ${label.padEnd(LABEL_WIDTH)} ${
           session.title !== undefined ? `[${session.name}] ` : ''
-        }${bits}`,
+        }${bits}  [${iconOf(session)}]`,
       );
       const indent = (depth: number): string => '      ' + '  '.repeat(depth - 1);
       walkAgents(session.agents, (agent) => {
         console.log(
           `${indent(agent.spawnDepth)}${agent.state === 'running' ? '◐' : '✓'} ` +
-            `${agent.agentType} (d${agent.spawnDepth})`,
+            `${agent.agentType} (d${agent.spawnDepth})  [${iconOf(agent)}]`,
         );
       });
       for (const task of session.tasks) {
@@ -152,6 +165,41 @@ async function main(): Promise<void> {
       `${titled.filter((s) => s.source === 'transcript').length} of ${history.length} history rows`,
     );
   }
+  // Whether anything is mid-turn right now is a property of the machine, so the
+  // spinner mapping reports a coverage gap rather than passing vacuously.
+  const generating = sessions.filter((s) => s.state === 'generating');
+  if (generating.length === 0) {
+    console.log(
+      '  [gap ] nothing is generating on this machine right now — the spinner mapping did not run',
+    );
+  } else {
+    check(
+      'a generating session renders the spinning ring in the working color',
+      generating.every((s) => iconOf(s) === 'loading~spin sessionRail.working'),
+      `${generating.length} generating, e.g. ${iconOf(generating[0])}`,
+    );
+    const working = snapshot.projects.filter((p) =>
+      p.sessions.some((s) => s.state === 'generating'),
+    );
+    check(
+      'its project row spins too, and counts the working sessions',
+      working.every(
+        (p) =>
+          iconOf(p) === 'loading~spin sessionRail.working' &&
+          String(toTreeItem(p).description ?? '').endsWith(
+            `${p.sessions.filter((s) => s.state === 'generating').length} working`,
+          ),
+      ),
+      working.map((p) => `${p.name}: ${String(toTreeItem(p).description ?? '')}`).join(', '),
+    );
+  }
+  check(
+    'idle and exited rows keep their static dots',
+    sessions
+      .filter((s) => s.state !== 'generating')
+      .every((s) => iconOf(s).startsWith('circle-filled')),
+    [...new Set(sessions.filter((s) => s.state !== 'generating').map((s) => iconOf(s)))].join(', '),
+  );
   check(
     'no session reports the undetectable `waiting` state',
     sessions.every((s) => s.state !== 'waiting'),

@@ -11,7 +11,7 @@
     "agents",
     "subagents"
   ],
-  "version": "0.2.0",
+  "version": "0.2.2",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -30,14 +30,15 @@
   "scripts": {
     "build": "node esbuild.js --production",
     "watch": "node esbuild.js --watch",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.scripts.json",
     "lint": "eslint src --ext ts",
     "vscode:prepublish": "npm run build",
     "package": "npx --yes @vscode/vsce package",
     "smoke": "esbuild scripts/smoke.ts --bundle --platform=node --target=node18 --format=cjs --external:vscode --outfile=.smoke.js --log-level=warning && node .smoke.js",
     "check:pins": "esbuild scripts/pins-check.ts --bundle --platform=node --target=node18 --format=cjs --alias:vscode=./scripts/vscode-stub.js --outfile=.pinscheck.js --log-level=warning && node .pinscheck.js",
+    "check:sticky": "esbuild scripts/sticky-check.ts --bundle --platform=node --target=node18 --format=cjs --alias:vscode=./scripts/vscode-stub.js --outfile=.stickycheck.js --log-level=warning && node .stickycheck.js",
     "check:registry": "esbuild scripts/registry-check.ts --bundle --platform=node --target=node18 --format=cjs --alias:vscode=./scripts/vscode-stub.js --outfile=.regcheck.js --log-level=warning && node .regcheck.js",
-    "verify": "npm run typecheck && npm run lint && npm run smoke && npm run check:pins && npm run check:registry && npm run build"
+    "verify": "npm run typecheck && npm run lint && npm run smoke && npm run check:pins && npm run check:registry && npm run check:sticky && npm run build"
   },
   "devDependencies": {
     "@types/vscode": "^1.90.0",
@@ -95,7 +96,7 @@
       },
       {
         "command": "sessionRail.newSessionHome",
-        "title": "New Session in Workspace Folder",
+        "title": "New Session, Scratchpad, or Terminal",
         "category": "Session Rail",
         "icon": "$(add)"
       },

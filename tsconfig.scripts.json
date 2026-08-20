@@ -1,0 +1,12 @@
+{
+  // `scripts/` is bundled by esbuild, which strips types without checking them —
+  // so a check could build a `~/.claude`-derived node with a field missing and
+  // still print a row of passes. It gets its own config because the root one
+  // sets `rootDir: src` for the extension bundle.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "include": ["src", "scripts"]
+}

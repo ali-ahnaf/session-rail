@@ -70,6 +70,8 @@ tree/          Snapshot → TreeItems                  (no filesystem access)
   items        row construction, the visual grammar
   search       the input box that drives the filter (no field widget exists)
   pins         pinned folders, persisted in globalState (the only state we keep)
+  progress     holds the view header's progress bar while anything is generating
+  motion       the single read of `workbench.reduceMotion`, shared by both
 terminal/
   link         session pid → vscode.Terminal via ps ancestry
   resume       open-or-resume: focus the host terminal, else `claude --resume`
@@ -77,6 +79,7 @@ status/        one status-bar item
 transcript/    read-only webview transcript reader
 workspace/
   explorer     show a directory in the Explorer (add root / reveal)
+  scratchpad   create a throwaway .md next to the work and open it
 extension.ts   activation + command wiring only — a switchboard, no logic
 ```
 
@@ -87,15 +90,21 @@ stays runnable outside the extension host.
 
 ## Hard invariants
 
-- **Read-only.** Never write, move, or delete anything under `~/.claude`. Three
+- **Read-only.** Never write, move, or delete anything under `~/.claude`. Four
   actions affect processes rather than files: `sessionRail.stopSession` sends
   SIGTERM behind a modal confirm, `sessionRail.focusTerminal` may start a
-  `claude --resume` in a new terminal, and `sessionRail.newSession` starts a
-  plain `claude` in a project directory. The extension still writes nothing
+  `claude --resume` in a new terminal, `sessionRail.newSession` starts a plain
+  `claude` in a project directory, and `sessionRail.newSessionHome` starts either
+  of those or a bare shell. The extension still writes nothing into `~/.claude`
   itself — but those processes do, so never point one at a transcript another
   live process owns (see the fork rule below).
-- **`showInExplorer` is the one write outside `~/.claude`.** Adding a workspace
-  root always lands on disk somewhere: with a saved `.code-workspace`,
+- **Two commands write outside `~/.claude`; nothing writes inside it.** The
+  Scratchpad branch of `newSessionHome` creates a new `scratchpad-<timestamp>.md`
+  in the chosen folder (`src/workspace/scratchpad.ts`) — always opened `wx`, so
+  an existing file makes it move to the next `-2` suffix instead of truncating
+  something the user cares about, and nothing is ever deleted.
+  `showInExplorer` writes indirectly: adding a workspace
+  root always lands on disk somewhere — with a saved `.code-workspace`,
   `updateWorkspaceFolders` writes the new folder into that file — an edit to the
   user's own repo config; without one, VS Code mints an untitled workspace under
   user data and `migrateWorkspaceSettings` copies folder-scoped settings into it.
@@ -163,6 +172,54 @@ stays runnable outside the extension host.
 - **Tail, never re-parse.** Transcripts are append-only and reach many megabytes.
   Use `Tailer` (per-file byte offsets, 4 MB delta cap, 512 KB cold-start seed).
   A `**/*.jsonl` watcher that re-reads on change will stall the extension host.
+- **`SessionState` is not a pure function of the current tick.** `generating`
+  carries a sticky hold: `deriveSessionState` records the tick whenever the
+  10 s activity window (or a running subagent) fires, and keeps returning
+  `generating` for `SESSION_STICKY_MS` (20 s) after that. A long tool call
+  writes nothing to the transcript, so without the hold the spinner blinks off
+  mid-turn and reads as a bug. Two rules the implementation depends on: the
+  anchor is the last tick the **window** fired, never the last tick the function
+  returned `generating` — re-anchoring on its own output holds the state open
+  forever, one poll at a time — and `alive === false` short-circuits before the
+  hold is consulted, so an exited session never spins. The hold lives on
+  `SessionScan.lastGeneratingTick` in `scan/registry.ts`, which is the single
+  source of truth the tree, the status bar, and `signatureOf` all read; it is
+  pinned by `scripts/sticky-check.ts` with an injected clock. Subagents are
+  deliberately **not** held — `AGENT_ACTIVE_WINDOW_MS` and a `tool_result`
+  still decide them.
+  The cost is accepted, and it is **the two spans added, not the hold alone**:
+  the hold is armed on the tick the window fires, which is itself up to
+  `SESSION_ACTIVE_WINDOW_MS` after the real last activity, so `generating` ends
+  at roughly `lastActivityAt + 30 s`, not `+ 20 s`. `sticky-check.ts` is the
+  authority on the number — it asserts `generating` at t+15 s and `idle` at
+  t+31 s. Retuning the overstay means changing `SESSION_STICKY_MS`, and reading
+  the total as 30 s while you do it.
+  One consequence of anchoring on a tick rather than on `lastActivityAt`: the
+  hold assumes polls are frequent relative to itself. At the top of
+  `refreshInterval`'s allowed range (30 s) two consecutive polls can be further
+  apart than `SESSION_STICKY_MS`, and the hold stops contributing anything.
+- **Motion is opt-out, and only motion is.** Every animated icon
+  (`loading~spin` on session, subagent, and project rows) plus the view header
+  progress bar is suppressed when `workbench.reduceMotion` is `'on'`; `'auto'`
+  and `'off'` both animate. It is read inline at render time in `tree/items.ts`
+  and `tree/progress.ts` — the same read-on-demand pattern as `showExited()` —
+  so there is **no config listener to keep in sync**. What must never move into
+  that branch is the non-animated half of the signal: the project row's
+  `N working` segment and the `Activity: working` tooltip line are text, and a
+  user who turned motion off still needs them.
+- **The header bar and the rows can disagree under a search, by design.** A
+  project row's spinner and its `N working` count are computed from
+  `node.sessions`, which is the *filtered* list while a search is active, whereas
+  `tree/progress.ts` reads the unfiltered `snapshot.projects` — the header bar
+  answers "is anything working on this machine", which a search should not
+  change. So a search that hides the only working session leaves the bar
+  spinning over a tree with no spinner in it. Correct, and surprising enough to
+  be worth reading twice before "fixing" either side.
+- **A project row's icon does not always encode pin state.** While any child
+  session is generating (and motion is allowed) the spinner takes the icon slot
+  from `$(folder)`/`$(pinned)`. Pin state stays readable from the `Pinned`
+  section the row sits under, from the Pin/Unpin context menu, and from
+  `contextValue` — which is untouched, so every menu `when` clause keeps working.
 - **Session liveness needs two signals.** `sessions/*.json` outlives the process,
   so `process.kill(pid, 0)` alone is not enough — `procStart` is compared against
   `ps -o lstart=` to guard PID reuse. Results cache for ~2s so a poll cycle
@@ -237,6 +294,7 @@ npm run typecheck        # tsc --noEmit
 npm run lint             # eslint src
 npm run smoke            # scan layer vs. real ~/.claude, known historical sessions
 npm run check:pins       # pinned-folders view logic (deterministic, no disk)
+npm run check:sticky     # sticky generating hold + icon mapping (deterministic, injected clock)
 npm run check:registry   # registry end-to-end, prints the tree as the sidebar renders it
 npm run verify           # all of the above + build. Run this before declaring done.
 ```
@@ -254,14 +312,30 @@ agrees with assumptions that were already wrong once.
 - `scripts/registry-check.ts` — the registry executed for real against whatever
   sessions are live now, with `vscode` aliased to `scripts/vscode-stub.js`. Prints
   the rendered tree; fastest way to compare output against reality.
-- `scripts/pins-check.ts` — the one deterministic check, and the one place a
-  stand-in snapshot is allowed: pins are the extension's **own** state, so there
-  is no on-disk shape to drift and nothing machine-dependent to observe. It runs
-  the real `RailTreeProvider` and `PinStore` over a fake registry and an
-  in-memory `Memento`. Do not extend it to cover anything read from `~/.claude`;
-  that is what the two machine-dependent checks are for.
+- `scripts/pins-check.ts` — deterministic, and one of the two places a stand-in
+  snapshot is allowed: pins are the extension's **own** state, so there is no
+  on-disk shape to drift and nothing machine-dependent to observe. It runs the
+  real `RailTreeProvider` and `PinStore` over a fake registry and an in-memory
+  `Memento`. Do not extend it to cover anything read from `~/.claude`; that is
+  what the two machine-dependent checks are for.
+- `scripts/sticky-check.ts` — deterministic for the same reason: it calls the
+  exported `deriveSessionState` with an injected clock, renders hand-built nodes
+  through the real `toTreeItem`, and drives a real `RailProgress` off a stubbed
+  `window.withProgress`, flipping `workbench.reduceMotion` on the stub in
+  between. It is the only check that reaches the motion-suppressed branch or the
+  progress bar's raise/off-delay/dispose sequence at all, since neither is
+  something a check can arrange on a live machine.
 
-Both are machine-dependent by design. A machine whose live sessions never spawned
+**`scripts/` is typechecked, and it has to be.** esbuild bundles the checks by
+stripping types without checking them, so a check can build a node with a
+required field missing and still print a row of passes — which happened once
+already. `npm run typecheck` therefore runs twice: the root `tsconfig.json` for
+the bundle, then `tsconfig.scripts.json` over `src` **and** `scripts`. A check
+that constructs a `~/.claude`-shaped node or a registry-private type should
+annotate it, so the next field added to that type breaks the build instead of
+being quietly ignored.
+
+`smoke.ts` and `registry-check.ts` are machine-dependent by design. A machine whose live sessions never spawned
 a nested agent reports that as a **coverage gap** rather than passing vacuously —
 if you add checks, preserve that property. Do not convert a machine-dependent
 check into a passing no-op.
@@ -357,17 +431,27 @@ check into a passing no-op.
   shell command keeps `claude` a child of the shell, which is what
   `findTerminalForPid` walks. A missing directory is refused, not silently
   swapped for the window default.
-- `newSessionHome` is the same `+` in the view title bar, for a session that
-  belongs to no project row yet. It shares `startSession` and differs only in
-  how the directory is chosen — the window's own folder, because that is what
-  the header `+` means in practice: no `workspaceFolders` → `os.homedir()`; one
-  folder → its `uri.fsPath`, no prompt; two or more →
+- `newSessionHome` is the same `+` in the view title bar, for work that belongs
+  to no project row yet. Taking no node, it asks the two questions the row `+`
+  already knows: **what** and **where**.
+  What is a three-way `showQuickPick` — Claude Session (`startSession`, exactly
+  what the button always did), Scratchpad (`createScratchpad`), Terminal
+  (`startTerminal`, a plain shell with nothing sent). Session stays first so the
+  original behavior is still the default landing item. The item type is
+  `QuickPickItem & { action }` — **never `kind`**, which is VS Code's own
+  separator enum and intersects to `never`.
+  Where is `resolveHeaderTarget`, shared by all three branches so a scratchpad
+  and a session can never disagree about the folder: the window's own folder,
+  because that is what the header `+` means in practice — no `workspaceFolders`
+  → `os.homedir()`; one folder → its `uri.fsPath`, no prompt; two or more →
   `window.showWorkspaceFolderPick`, and Escape starts nothing. The one-folder
   case is branched explicitly so that an unambiguous window can never prompt,
-  whatever the pick does internally. It takes no node, so unlike the other
-  node-driven commands it stays visible in the command palette (the title is
-  "New Session in Workspace Folder"; the id keeps the `Home` spelling so existing
-  keybindings survive).
+  whatever the pick does internally. All three refuse a missing directory rather
+  than falling back to the window default — the directory *is* the request, so a
+  fallback starts a session, or writes a file, in the wrong repo.
+  It takes no node, so unlike the other node-driven commands it stays visible in
+  the command palette (the title is "New Session, Scratchpad, or Terminal"; the
+  id keeps the `Home` spelling so existing keybindings survive).
 - `focusTerminal` is the click action on every session row, live or exited, and
   never dead-ends: it focuses the hosting terminal if this window has one, else
   reuses the terminal it opened earlier for that session, else opens a new one

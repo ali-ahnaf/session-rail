@@ -85,6 +85,30 @@ class MarkdownString {
   }
 }
 
+/**
+ * `window.withProgress` calls, so a check can see the view header bar being
+ * raised and settled. The real API resolves the bar when the promise the task
+ * returns settles, which is exactly what RailProgress relies on — so record the
+ * promise and whether it has settled, and nothing else.
+ */
+const progressCalls = [];
+
+const window = {
+  withProgress(options, task) {
+    const call = { viewId: options && options.location && options.location.viewId, settled: false };
+    progressCalls.push(call);
+    const result = task({ report() {} }, { isCancellationRequested: false });
+    return Promise.resolve(result).then(
+      () => {
+        call.settled = true;
+      },
+      () => {
+        call.settled = true;
+      },
+    );
+  },
+};
+
 /** Context keys the provider sets, so a check can assert on them. */
 const contextKeys = Object.create(null);
 
@@ -101,6 +125,8 @@ module.exports = {
   Disposable,
   EventEmitter,
   workspace,
+  window,
+  progressCalls,
   commands,
   contextKeys,
   TreeItem,
