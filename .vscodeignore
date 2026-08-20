@@ -3,6 +3,7 @@ node_modules/**
 .vscode/**
 esbuild.js
 tsconfig.json
+tsconfig.scripts.json
 .eslintrc.json
 **/*.map
 **/*.ts
@@ -12,6 +13,7 @@ scripts/**
 .smoke.js
 .regcheck.js
 .pinscheck.js
+.stickycheck.js
 package-lock.json
 media/demo.mp4
 .claude/**

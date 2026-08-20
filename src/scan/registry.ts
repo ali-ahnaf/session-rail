@@ -67,6 +67,14 @@ const COLD_START_BYTES = 512 * 1024;
 /** A session is "generating" if the transcript moved within this window. */
 const SESSION_ACTIVE_WINDOW_MS = 10_000;
 
+/**
+ * How long a session keeps reporting `generating` after the activity window
+ * last fired. Absorbs the quiet gaps inside a single turn — a long tool call
+ * writes nothing to the transcript, and a spinner that blinks off mid-turn
+ * reads as a bug. `alive === false` still wins immediately.
+ */
+const SESSION_STICKY_MS = 20_000;
+
 /** An agent claimed to be running must also have written within this window. */
 const AGENT_ACTIVE_WINDOW_MS = 120_000;
 
@@ -87,8 +95,16 @@ interface RailConfig {
   historyDays: number;
 }
 
-/** Everything we remember about one session between ticks. */
-interface SessionScan {
+/**
+ * Everything we remember about one session between ticks.
+ *
+ * Exported only so scripts/sticky-check.ts can annotate the value it hands to
+ * `deriveSessionState` — `scripts/` sits outside `tsconfig`'s `include`, so an
+ * unannotated literal there would keep compiling after a field was added here.
+ * Still registry-private in the sense that matters: it is not in
+ * `src/model/types.ts` and nothing in `tree/` or `status/` may read it.
+ */
+export interface SessionScan {
   /** tool_use id → emitter (this sessionId, or an agentId). */
   spawnIndex: Map<string, string>;
   /** tool_use ids that have a recorded result. */
@@ -100,6 +116,8 @@ interface SessionScan {
   /** Newest `ai-title` seen in the main transcript. */
   title?: string;
   capped?: boolean;
+  /** Last tick at which the activity window fired, for SESSION_STICKY_MS. */
+  lastGeneratingTick?: number;
 }
 
 class Registry implements RailRegistry {
@@ -298,7 +316,7 @@ class Registry implements RailRegistry {
       // 512 KB seed. See `coldTitle` for why it runs at most once.
       title: scan.title ?? this.coldTitle(record.sessionId, transcriptPath),
       cwd: record.cwd,
-      state: deriveSessionState(alive, agents, lastActivityAt, now),
+      state: deriveSessionState(alive, agents, lastActivityAt, now, scan),
       alive,
       source: 'registry',
       branch: scan.branch,
@@ -689,11 +707,20 @@ function preferEntry(candidate: LivenessEntry, incumbent: LivenessEntry): boolea
   return candidate.record.pid > incumbent.record.pid;
 }
 
-function deriveSessionState(
+/**
+ * The one place session state is decided, so the tree, the status bar and the
+ * change fingerprint can never disagree.
+ *
+ * Not a pure function of the current tick: `scan.lastGeneratingTick` carries the
+ * sticky hold across polls. Exported for scripts/sticky-check.ts, which is the
+ * only thing outside this module that calls it.
+ */
+export function deriveSessionState(
   alive: boolean,
   agents: readonly AgentNode[],
   lastActivityAt: number | undefined,
   now: number,
+  scan: SessionScan,
 ): SessionState {
   if (!alive) {
     return 'exited';
@@ -705,10 +732,20 @@ function deriveSessionState(
       running = true;
     }
   });
-  if (running) {
+  const active =
+    running ||
+    (lastActivityAt !== undefined && now - lastActivityAt <= SESSION_ACTIVE_WINDOW_MS);
+  if (active) {
+    scan.lastGeneratingTick = now;
     return 'generating';
   }
-  if (lastActivityAt !== undefined && now - lastActivityAt <= SESSION_ACTIVE_WINDOW_MS) {
+  // Anchored on the last tick the window fired, never on the last tick this
+  // returned `generating` — re-anchoring on its own output would hold the state
+  // open forever, one poll interval at a time.
+  if (
+    scan.lastGeneratingTick !== undefined &&
+    now - scan.lastGeneratingTick <= SESSION_STICKY_MS
+  ) {
     return 'generating';
   }
   // 'waiting' (blocked on a permission prompt) leaves no trace on disk in v1, so

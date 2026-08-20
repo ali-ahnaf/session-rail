@@ -18,13 +18,21 @@ import { clearProjectDirCache, setClaudeHome } from './scan/paths';
 import { createRegistry, type RailRegistry } from './scan/registry';
 import { RailStatusBar } from './status/statusBar';
 import { clearAncestryCache } from './terminal/link';
-import { clearOpenedTerminals, forgetTerminal, openSession, startSession } from './terminal/resume';
+import {
+  clearOpenedTerminals,
+  forgetTerminal,
+  openSession,
+  startSession,
+  startTerminal,
+} from './terminal/resume';
 import { TranscriptPanel } from './transcript/panel';
 import { PinStore } from './tree/pins';
+import { RailProgress } from './tree/progress';
 import { RailTreeProvider } from './tree/provider';
 import { disposeSearch, promptSearch } from './tree/search';
 import { log } from './util/log';
 import { showInExplorer } from './workspace/explorer';
+import { createScratchpad } from './workspace/scratchpad';
 
 const CONFIG_SECTION = 'sessionRail';
 
@@ -42,6 +50,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const pins = new PinStore(context.globalState);
   const provider = new RailTreeProvider(registry, pins);
   const statusBar = new RailStatusBar(registry);
+  const progress = new RailProgress(registry);
 
   const view = vscode.window.createTreeView<RailNode>('sessionRail.tree', {
     treeDataProvider: provider,
@@ -56,6 +65,7 @@ export function activate(context: vscode.ExtensionContext): void {
     provider,
     pins,
     statusBar,
+    progress,
     view,
     ...registerCommands(context, registry, provider, pins),
     vscode.workspace.onDidChangeConfiguration((event) => {
@@ -147,41 +157,51 @@ function registerCommands(
       }
     }),
 
-    // The view-title `+`. Takes no node, so it needs a directory of its own:
-    // the folder this window is open at, which is what a session started from
-    // the header almost always means. Multi-root windows are ambiguous, so ask;
-    // a window with no folder open falls back to the home directory, the one
-    // place that is always there and belongs to no project in the tree.
+    // The view-title `+`. Takes no node, so it asks two questions the row `+`
+    // already knows the answers to: *what* to open, and *where*. The what is a
+    // three-way pick because the header is where work that belongs to no
+    // session row starts; the where is `resolveHeaderTarget`, shared by all
+    // three so a scratchpad and a session can never disagree about the folder.
     register('sessionRail.newSessionHome', async () => {
-      const folders = vscode.workspace.workspaceFolders ?? [];
-      let dir: string;
-      let label: string;
-
-      if (folders.length === 0) {
-        const home = homedir();
-        dir = home;
-        label = basename(home) || 'home';
-      } else if (folders.length === 1) {
-        // One folder is unambiguous, so it must never prompt — hence the
-        // explicit branch rather than leaving it to the pick.
-        dir = folders[0].uri.fsPath;
-        label = folders[0].name;
-      } else {
-        const picked = await vscode.window.showWorkspaceFolderPick({
-          placeHolder: 'Start a Claude session in…',
-        });
-        if (!picked) {
-          return;
-        }
-        dir = picked.uri.fsPath;
-        label = picked.name;
+      const kind = await pickHeaderAction();
+      if (!kind) {
+        return;
       }
 
-      // A virtual-filesystem root has no usable local path; `startSession`'s
+      const target = await resolveHeaderTarget(kind);
+      if (!target) {
+        return;
+      }
+      const { dir, label } = target;
+
+      // A virtual-filesystem root has no usable local path; every branch's
       // existence check turns that into the same warning as a deleted folder.
-      if (startSession(dir, label) === 'missing-dir') {
+      if (kind === 'session') {
+        if (startSession(dir, label) === 'missing-dir') {
+          void vscode.window.showWarningMessage(
+            `Cannot start a session in ${dir}: the folder does not exist.`,
+          );
+        }
+        return;
+      }
+
+      if (kind === 'terminal') {
+        if (startTerminal(dir, label) === 'missing-dir') {
+          void vscode.window.showWarningMessage(
+            `Cannot open a terminal in ${dir}: the folder does not exist.`,
+          );
+        }
+        return;
+      }
+
+      const outcome = await createScratchpad(dir);
+      if (outcome === 'missing-dir') {
         void vscode.window.showWarningMessage(
-          `Cannot start a session in ${dir}: the folder does not exist.`,
+          `Cannot create a scratchpad in ${dir}: the folder does not exist.`,
+        );
+      } else if (outcome === 'failed') {
+        void vscode.window.showWarningMessage(
+          `Could not create a scratchpad in ${dir}. See the Session Rail log.`,
         );
       }
     }),
@@ -339,6 +359,76 @@ async function stopSession(session: SessionNode, registry: RailRegistry): Promis
 // Command arguments arrive as `unknown` — they come from tree selection, the
 // command palette, or a keybinding, and only the tree supplies a real node.
 // ─────────────────────────────────────────────────────────────
+
+/** What the view-title `+` can start. */
+type HeaderAction = 'session' | 'scratchpad' | 'terminal';
+
+/**
+ * Ask what the `+` should open. Escape returns undefined and starts nothing.
+ *
+ * Order is deliberate: the session is what the button did before this pick
+ * existed, so it stays first and stays the default landing item.
+ */
+async function pickHeaderAction(): Promise<HeaderAction | undefined> {
+  // `action`, not `kind`: `QuickPickItem.kind` is VS Code's own
+  // separator enum, and intersecting the two collapses the type to `never`.
+  const items: (vscode.QuickPickItem & { action: HeaderAction })[] = [
+    {
+      action: 'session',
+      label: '$(comment-discussion) Claude Session',
+      detail: 'Run `claude` in a new terminal',
+    },
+    {
+      action: 'scratchpad',
+      label: '$(note) Scratchpad',
+      detail: 'Create a new Markdown file and open it in a tab',
+    },
+    {
+      action: 'terminal',
+      label: '$(terminal) Terminal',
+      detail: 'Open a plain shell terminal',
+    },
+  ];
+
+  const picked = await vscode.window.showQuickPick(items, {
+    placeHolder: 'What would you like to start?',
+  });
+  return picked?.action;
+}
+
+/**
+ * The directory the header `+` acts in: the folder this window is open at,
+ * which is what anything started from the header almost always means.
+ * Multi-root windows are ambiguous, so ask; a window with no folder open falls
+ * back to the home directory, the one place that is always there and belongs
+ * to no project in the tree. Escape from the pick returns undefined.
+ */
+async function resolveHeaderTarget(
+  kind: HeaderAction,
+): Promise<{ dir: string; label: string } | undefined> {
+  const folders = vscode.workspace.workspaceFolders ?? [];
+
+  if (folders.length === 0) {
+    const home = homedir();
+    return { dir: home, label: basename(home) || 'home' };
+  }
+  if (folders.length === 1) {
+    // One folder is unambiguous, so it must never prompt — hence the explicit
+    // branch rather than leaving it to the pick.
+    return { dir: folders[0].uri.fsPath, label: folders[0].name };
+  }
+
+  const picked = await vscode.window.showWorkspaceFolderPick({
+    placeHolder: PLACEHOLDERS[kind],
+  });
+  return picked ? { dir: picked.uri.fsPath, label: picked.name } : undefined;
+}
+
+const PLACEHOLDERS: Record<HeaderAction, string> = {
+  session: 'Start a Claude session in…',
+  scratchpad: 'Create a scratchpad in…',
+  terminal: 'Open a terminal in…',
+};
 
 function isRailNode(value: unknown): value is RailNode {
   return typeof value === 'object' && value !== null && 'kind' in value;

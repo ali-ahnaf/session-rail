@@ -285,6 +285,33 @@ export function startSession(dir: string, label: string): StartOutcome {
   return 'started';
 }
 
+/**
+ * Open a plain shell terminal in `dir` — no `claude`, nothing sent.
+ *
+ * Same directory contract as `startSession`: a missing directory is refused
+ * rather than swapped for the window default. Unlike a session terminal this
+ * one is *not* transient, because a restored shell is a perfectly good shell —
+ * there is no session attached for the restore to break.
+ */
+export function startTerminal(dir: string, label: string): StartOutcome {
+  if (!existsSync(dir)) {
+    log.warn(`Cannot open a terminal in ${dir}: the directory no longer exists`);
+    return 'missing-dir';
+  }
+
+  log.info(`Opening a terminal in ${dir}`);
+
+  const terminal = vscode.window.createTerminal({
+    name: label,
+    cwd: dir,
+    location: terminalLocation(),
+    iconPath: new vscode.ThemeIcon('terminal'),
+  });
+  terminal.show(false);
+
+  return 'started';
+}
+
 function createSessionTerminal(session: SessionNode, fork: boolean): vscode.Terminal {
   // A session's cwd can be gone by the time it is reopened; VS Code errors on a
   // missing cwd, so fall back to the window's default.
