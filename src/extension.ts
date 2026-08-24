@@ -7,8 +7,9 @@
  * those modules; this file stays a switchboard.
  */
 
+import { existsSync } from 'fs';
 import { homedir } from 'os';
-import { basename } from 'path';
+import { basename, join } from 'path';
 
 import * as vscode from 'vscode';
 
@@ -33,6 +34,13 @@ import { disposeSearch, promptSearch } from './tree/search';
 import { log } from './util/log';
 import { showInExplorer } from './workspace/explorer';
 import { createScratchpad } from './workspace/scratchpad';
+import {
+  createWorktree,
+  gitRootOf,
+  removeWorktree,
+  validateWorktreeName,
+  worktreeParentFor,
+} from './workspace/worktree';
 
 const CONFIG_SECTION = 'sessionRail';
 
@@ -157,6 +165,22 @@ function registerCommands(
       }
     }),
 
+    register('sessionRail.newWorktreeSession', async (node) => {
+      const project = asProject(node);
+      if (!project) {
+        return;
+      }
+      await newWorktreeSession(project.dir);
+    }),
+
+    register('sessionRail.removeWorktree', async (node) => {
+      const project = asProject(node);
+      if (!project) {
+        return;
+      }
+      await removeWorktreeCommand(project, registry);
+    }),
+
     // The view-title `+`. Takes no node, so it asks two questions the row `+`
     // already knows the answers to: *what* to open, and *where*. The what is a
     // three-way pick because the header is where work that belongs to no
@@ -191,6 +215,11 @@ function registerCommands(
             `Cannot open a terminal in ${dir}: the folder does not exist.`,
           );
         }
+        return;
+      }
+
+      if (kind === 'worktree') {
+        await newWorktreeSession(dir);
         return;
       }
 
@@ -354,6 +383,133 @@ async function stopSession(session: SessionNode, registry: RailRegistry): Promis
 }
 
 // ─────────────────────────────────────────────────────────────
+// Worktrees
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Ask for a name, create the worktree, start `claude` in it. Shared by the
+ * project-row command and the header `+` so both behave identically. `dir` may
+ * be anywhere inside the repo — the worktree is made of the containing repo,
+ * which is what a subdirectory-grouped row means by "this project".
+ */
+async function newWorktreeSession(dir: string): Promise<void> {
+  const root = gitRootOf(dir);
+  if (root === undefined) {
+    void vscode.window.showWarningMessage(
+      `Cannot create a worktree: ${dir} is not inside a git repository.`,
+    );
+    return;
+  }
+
+  const parent = worktreeParentFor(root);
+  const name = await vscode.window.showInputBox({
+    title: `New worktree of ${basename(root)}`,
+    prompt: `Folder and branch name — created under ${parent}`,
+    placeHolder: 'fix-auth',
+    validateInput: (value) => {
+      const trimmed = value.trim();
+      const invalid = validateWorktreeName(trimmed);
+      if (invalid !== undefined) {
+        return invalid;
+      }
+      return existsSync(join(parent, trimmed)) ? `${join(parent, trimmed)} already exists.` : undefined;
+    },
+  });
+  if (name === undefined) {
+    // Escape starts nothing.
+    return;
+  }
+
+  const result = await createWorktree(root, name.trim());
+  switch (result.outcome) {
+    case 'created':
+      if (result.dir !== undefined && startSession(result.dir, name.trim()) === 'missing-dir') {
+        void vscode.window.showWarningMessage(
+          `Created the worktree but ${result.dir} is not readable. See the Session Rail log.`,
+        );
+      }
+      return;
+    case 'exists':
+      void vscode.window.showWarningMessage(`${result.dir ?? name} already exists.`);
+      return;
+    case 'missing-dir':
+      void vscode.window.showWarningMessage(`${root} no longer exists.`);
+      return;
+    case 'not-a-repo':
+      void vscode.window.showWarningMessage(`${root} is not a git repository.`);
+      return;
+    case 'bad-name':
+      void vscode.window.showWarningMessage(result.detail ?? 'That name cannot be used.');
+      return;
+    case 'failed':
+      void vscode.window.showWarningMessage(
+        `git could not create the worktree${result.detail ? `: ${result.detail}` : ''}. ` +
+          'See the Session Rail log.',
+      );
+      return;
+  }
+}
+
+/**
+ * Deleting a directory of work always confirms — modal, never pre-selected —
+ * and a live session blocks it outright: yanking the folder out from under a
+ * running `claude` is the filesystem version of two processes on one
+ * transcript. A dirty worktree gets a second, scarier confirm before --force.
+ */
+async function removeWorktreeCommand(project: ProjectNode, registry: RailRegistry): Promise<void> {
+  if (project.liveCount > 0) {
+    void vscode.window.showWarningMessage(
+      `${project.name} has ${project.liveCount === 1 ? 'a running session' : 'running sessions'} — ` +
+        'stop them before removing the worktree.',
+    );
+    return;
+  }
+
+  const confirm = await vscode.window.showWarningMessage(
+    `Remove worktree ${project.name}?`,
+    {
+      modal: true,
+      detail:
+        `Deletes ${project.dir} and unregisters it from the repository. ` +
+        'The branch and any session transcripts are kept.',
+    },
+    'Remove worktree',
+  );
+  if (confirm !== 'Remove worktree') {
+    return;
+  }
+
+  let result = await removeWorktree(project.dir);
+  if (result.outcome === 'dirty') {
+    const force = await vscode.window.showWarningMessage(
+      `${project.name} has uncommitted changes`,
+      {
+        modal: true,
+        detail:
+          'Removing it anyway discards its modified and untracked files. ' +
+          'The branch is kept.',
+      },
+      'Discard and remove',
+    );
+    if (force !== 'Discard and remove') {
+      return;
+    }
+    result = await removeWorktree(project.dir, { force: true });
+  }
+
+  if (result.outcome === 'removed') {
+    await registry.refresh();
+  } else if (result.outcome === 'not-a-worktree') {
+    void vscode.window.showWarningMessage(`${project.dir} is not a linked git worktree.`);
+  } else {
+    void vscode.window.showWarningMessage(
+      `git could not remove the worktree${result.detail ? `: ${result.detail}` : ''}. ` +
+        'See the Session Rail log.',
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
 // Node narrowing
 //
 // Command arguments arrive as `unknown` — they come from tree selection, the
@@ -361,7 +517,7 @@ async function stopSession(session: SessionNode, registry: RailRegistry): Promis
 // ─────────────────────────────────────────────────────────────
 
 /** What the view-title `+` can start. */
-type HeaderAction = 'session' | 'scratchpad' | 'terminal';
+type HeaderAction = 'session' | 'scratchpad' | 'terminal' | 'worktree';
 
 /**
  * Ask what the `+` should open. Escape returns undefined and starts nothing.
@@ -382,6 +538,11 @@ async function pickHeaderAction(): Promise<HeaderAction | undefined> {
       action: 'scratchpad',
       label: '$(note) Scratchpad',
       detail: 'Create a new Markdown file and open it in a tab',
+    },
+    {
+      action: 'worktree',
+      label: '$(git-branch) Worktree Session',
+      detail: 'Create a git worktree next to the repo and run `claude` in it',
     },
     {
       action: 'terminal',
@@ -428,6 +589,7 @@ const PLACEHOLDERS: Record<HeaderAction, string> = {
   session: 'Start a Claude session in…',
   scratchpad: 'Create a scratchpad in…',
   terminal: 'Open a terminal in…',
+  worktree: 'Create a worktree of…',
 };
 
 function isRailNode(value: unknown): value is RailNode {

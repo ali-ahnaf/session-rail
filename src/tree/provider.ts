@@ -17,6 +17,7 @@ import {
   SectionNode,
   SessionNode,
   Snapshot,
+  sessionLabel,
   walkAgents,
 } from '../model/types';
 import type { RailRegistry } from '../scan/registry';
@@ -53,6 +54,13 @@ export class RailTreeProvider implements vscode.TreeDataProvider<RailNode>, vsco
    * `getChildren(undefined)` handed to the view.
    */
   private roots: RailNode[] = [];
+  /**
+   * Worktree projects nested under the project they were created from, keyed by
+   * the parent's `nodeKey`. Rebuilt with the roots: a project row is either a
+   * root or a child here, never both, so `TreeItem.id` stays unique. Empty while
+   * a search is active — the search is over sessions and renders flat.
+   */
+  private worktreeChildren = new Map<string, ProjectNode[]>();
   private readonly pinSubscription: vscode.Disposable;
 
   // The registry is read once here and thereafter only through onDidChange, so
@@ -107,10 +115,13 @@ export class RailTreeProvider implements vscode.TreeDataProvider<RailNode>, vsco
 
   getTreeItem(node: RailNode): vscode.TreeItem {
     try {
+      const nested = node.kind === 'project' ? this.worktreeChildren.get(nodeKey(node)) : undefined;
       return toTreeItem(node, {
         filtering: this.filter.length > 0,
         exitedHidden: !showExited(),
         pinned: node.kind === 'project' && this.pins.has(node.dir),
+        nestedWorktrees: nested?.length,
+        nestedLive: nested?.reduce((sum, child) => sum + child.liveCount, 0),
       });
     } catch (error) {
       log.error('RailTreeProvider.getTreeItem failed', error);
@@ -128,7 +139,7 @@ export class RailTreeProvider implements vscode.TreeDataProvider<RailNode>, vsco
         case 'section':
           return node.projects;
         case 'project':
-          return node.sessions;
+          return [...node.sessions, ...(this.worktreeChildren.get(nodeKey(node)) ?? [])];
         case 'session':
           return [...node.agents, ...node.tasks];
         case 'agent':
@@ -181,6 +192,10 @@ export class RailTreeProvider implements vscode.TreeDataProvider<RailNode>, vsco
    */
   private recompute(): void {
     const { pinned, unpinned } = this.splitRoots();
+    // Worktree rows tuck under the project they were created from; the ones
+    // that found a parent leave the root list.
+    const { rootUnpinned, children } = this.nestWorktrees(pinned, unpinned);
+    this.worktreeChildren = children;
 
     const rows: RailNode[] = [];
     // A search row over zero sessions would only be in the way — but once a
@@ -197,10 +212,61 @@ export class RailTreeProvider implements vscode.TreeDataProvider<RailNode>, vsco
     if (section !== undefined) {
       rows.push(section);
     }
-    rows.push(...unpinned);
+    rows.push(...rootUnpinned);
 
     this.roots = rows;
-    this.rebuildParentMap(pinned, unpinned, section);
+    this.rebuildParentMap(pinned, unpinned, section, children);
+  }
+
+  /**
+   * Nest each unpinned worktree project under the row for its main repo —
+   * `parentDir`, which the registry parsed from the worktree's `.git` file.
+   *
+   * Presentation only: the snapshot's `projects` list stays flat, so the status
+   * bar and the header progress never walk a hierarchy. A worktree stays at the
+   * root when its parent row is not visible (no sessions in the main repo and
+   * it is not pinned) — a row that vanished into an absent parent would hide
+   * its sessions. A *pinned* worktree also stays where the accordion puts it: a
+   * node cannot render in two places, and pin order is the user's own. While a
+   * search is active the tree renders flat — the search is over sessions, and
+   * a parent kept alive only to carry a matching child would itself read as a
+   * match.
+   */
+  private nestWorktrees(
+    pinned: ProjectNode[],
+    unpinned: ProjectNode[],
+  ): { rootUnpinned: ProjectNode[]; children: Map<string, ProjectNode[]> } {
+    const children = new Map<string, ProjectNode[]>();
+    if (this.filter.length > 0) {
+      return { rootUnpinned: unpinned, children };
+    }
+
+    // Parents can be pinned (the child then renders inside the accordion) or
+    // placeholders — a pinned main repo with nothing running still shows its
+    // worktrees.
+    const byDir = new Map(
+      [...pinned, ...unpinned].map((project) => [normalizeDir(project.dir), project]),
+    );
+
+    const rootUnpinned: ProjectNode[] = [];
+    for (const project of unpinned) {
+      const parent =
+        project.worktree === true && project.parentDir !== undefined
+          ? byDir.get(normalizeDir(project.parentDir))
+          : undefined;
+      if (parent === undefined || parent === project) {
+        rootUnpinned.push(project);
+        continue;
+      }
+      const siblings = children.get(nodeKey(parent));
+      if (siblings === undefined) {
+        children.set(nodeKey(parent), [project]);
+      } else {
+        siblings.push(project);
+      }
+    }
+
+    return { rootUnpinned, children };
   }
 
   /**
@@ -284,12 +350,21 @@ export class RailTreeProvider implements vscode.TreeDataProvider<RailNode>, vsco
     pinned: ProjectNode[],
     unpinned: ProjectNode[],
     section: SectionNode | undefined,
+    children: Map<string, ProjectNode[]>,
   ): void {
     const map = new Map<string, RailNode>();
 
     if (section !== undefined) {
       for (const project of pinned) {
         map.set(nodeKey(project), section);
+      }
+    }
+
+    // A nested worktree's parent is the project row it renders under — set
+    // after the section entries so a child never points at the accordion.
+    for (const project of [...pinned, ...unpinned]) {
+      for (const child of children.get(nodeKey(project)) ?? []) {
+        map.set(nodeKey(child), project);
       }
     }
 
@@ -317,12 +392,13 @@ export class RailTreeProvider implements vscode.TreeDataProvider<RailNode>, vsco
 }
 
 /**
- * Case-insensitive substring match on what the row actually shows: the
- * `ai-title` when the session has one, its derived name when it does not. A
- * live session earns its title only after the first `ai-title` record lands, so
- * matching the label rather than `title` alone keeps young sessions findable.
- * Plain substring, not fuzzy — a search that matches loosely across a list of
- * near-identical titles is worse than one that misses.
+ * Case-insensitive substring match on what the row actually shows —
+ * `sessionLabel`, the same fold items.ts renders (title, then branch when the
+ * name is only the sessionId fallback, then name). A live session earns its
+ * title only after the first `ai-title` record lands, so matching the label
+ * rather than `title` alone keeps young sessions findable. Plain substring,
+ * not fuzzy — a search that matches loosely across a list of near-identical
+ * titles is worse than one that misses.
  */
 /**
  * A `ProjectNode` for a pinned directory the snapshot has no sessions for. Built
@@ -352,5 +428,5 @@ function showExited(): boolean {
 }
 
 function matchesQuery(session: SessionNode, lowercaseNeedle: string): boolean {
-  return (session.title ?? session.name).toLowerCase().includes(lowercaseNeedle);
+  return sessionLabel(session).toLowerCase().includes(lowercaseNeedle);
 }

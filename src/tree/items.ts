@@ -22,6 +22,7 @@ import {
   SessionNode,
   SessionState,
   TaskNode,
+  sessionLabel,
 } from '../model/types';
 import { motionAllowed } from './motion';
 
@@ -55,6 +56,17 @@ export interface RenderOptions {
    * Unpin where an unpinned one offers Pin.
    */
   pinned?: boolean;
+  /**
+   * Worktree project rows the provider nests under this project. Only the
+   * provider knows — nesting is its presentation state, not a node field — and
+   * a project with only worktrees under it must still be expandable.
+   */
+  nestedWorktrees?: number;
+  /**
+   * Live sessions across those nested worktrees. A parent whose only activity
+   * is inside a worktree must still open expanded, or the work is invisible.
+   */
+  nestedLive?: number;
 }
 
 /** TreeItem that keeps the RailNode it was rendered from reachable. */
@@ -164,13 +176,17 @@ function buildSectionItem(node: SectionNode): RailTreeItem {
 }
 
 function buildProjectItem(node: ProjectNode, options: RenderOptions): RailTreeItem {
+  const nested = options.nestedWorktrees ?? 0;
+  const nestedLive = options.nestedLive ?? 0;
   // A project with nothing running is history — with `showExited` on there can
   // be dozens of them, so they open closed. Anything live stays expanded, and
   // so does anything a search kept: a collapsed match is an invisible match.
+  // Nested worktree rows count as content and their live sessions as activity,
+  // or a repo whose only work happens in worktrees would render shut.
   const collapsibleState =
-    node.sessions.length === 0
+    node.sessions.length === 0 && nested === 0
       ? vscode.TreeItemCollapsibleState.None
-      : node.liveCount > 0 || options.filtering === true
+      : node.liveCount > 0 || nestedLive > 0 || options.filtering === true
         ? vscode.TreeItemCollapsibleState.Expanded
         : vscode.TreeItemCollapsibleState.Collapsed;
 
@@ -199,6 +215,15 @@ function buildProjectItem(node: ProjectNode, options: RenderOptions): RailTreeIt
     // `reduceMotion` and tells a collapsed row how much is in flight.
     description.push(`${working} working`);
   }
+  if (nested > 0) {
+    // What a collapsed parent is holding besides its own sessions.
+    description.push(`${nested} ${nested === 1 ? 'worktree' : 'worktrees'}`);
+  }
+  if (node.worktree === true) {
+    // Static text, like `N working` — the marker must survive `reduceMotion`
+    // and stay readable however the icon slot is being used.
+    description.push('worktree');
+  }
   if (description.length > 0) {
     item.description = description.join(' \u00b7 ');
   }
@@ -209,11 +234,21 @@ function buildProjectItem(node: ProjectNode, options: RenderOptions): RailTreeIt
     working > 0 && motionAllowed()
       ? new vscode.ThemeIcon('loading~spin', new vscode.ThemeColor('sessionRail.working'))
       : new vscode.ThemeIcon(pinned ? 'pinned' : 'folder');
-  // The one place a contextValue carries more than a node kind: the menus need
-  // to offer Pin or Unpin, never both.
-  item.contextValue = pinned ? 'project.pinned' : 'project';
+  // Two flags ride the contextValue beyond the node kind, in a fixed order:
+  // `project[.worktree][.pinned]`. The menus need Pin or Unpin (never both) and
+  // Remove Worktree only on rows where git can actually remove one.
+  let contextValue = 'project';
+  if (node.worktree === true) {
+    contextValue += '.worktree';
+  }
+  if (pinned) {
+    contextValue += '.pinned';
+  }
+  item.contextValue = contextValue;
   item.tooltip = new vscode.MarkdownString(
-    `**Project**\n\n- **Path**: \`${node.dir}\`` + (pinned ? '\n- **Pinned**: yes' : ''),
+    `**Project**\n\n- **Path**: \`${node.dir}\`` +
+      (node.worktree === true ? '\n- **Worktree**: yes' : '') +
+      (pinned ? '\n- **Pinned**: yes' : ''),
   );
 
   return item;
@@ -225,10 +260,11 @@ function buildSessionItem(node: SessionNode): RailTreeItem {
       ? vscode.TreeItemCollapsibleState.Expanded
       : vscode.TreeItemCollapsibleState.None;
 
-  // Claude Code's summarized title when it has one; its derived name otherwise.
-  // The name is not lost — it moves into the description, where it is still the
-  // string that matches the terminal a resume would attach to.
-  const item = new RailTreeItem(node.title ?? node.name, collapsibleState, node);
+  // The summarized title when there is one, the branch while the name is only
+  // the sessionId fallback, the name otherwise — see sessionLabel. The name is
+  // not lost — it moves into the description, where it is still the string
+  // that matches the terminal a resume would attach to.
+  const item = new RailTreeItem(sessionLabel(node), collapsibleState, node);
   item.id = nodeKey(node);
   const description = sessionDescription(node);
   if (description !== undefined) {
@@ -272,13 +308,16 @@ function sessionDescription(node: SessionNode): string | undefined {
       : 'exited';
   }
 
+  const label = sessionLabel(node);
   const parts: string[] = [];
-  if (node.title !== undefined) {
-    // Displaced from the label by the title, but still worth showing: it is the
-    // name the terminal and `focusTerminal`'s messages use.
+  if (label !== node.name) {
+    // Displaced from the label by the title or the branch, but still worth
+    // showing: it is the name the terminal and `focusTerminal`'s messages use.
     parts.push(node.name);
   }
-  if (node.branch !== undefined) {
+  if (node.branch !== undefined && node.branch !== label) {
+    // Skipped when the branch already IS the label — `fix-auth · fix-auth`
+    // says nothing twice.
     parts.push(node.branch);
   }
   if (node.model !== undefined) {

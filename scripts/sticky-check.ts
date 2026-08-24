@@ -238,6 +238,52 @@ async function main(): Promise<void> {
     );
   }
 
+  console.log('\nSession labels fold title, branch, and name');
+  {
+    // `name` here equals `sessionId.slice(0, 8)` — the registry's fallback for
+    // a record with no name, which is where the branch is allowed to step in.
+    const fresh: SessionNode = {
+      ...session('idle'),
+      sessionId: 'a1b2c3d4-0000-4000-8000-000000000000',
+      name: 'a1b2c3d4',
+      branch: 'fix-auth',
+    };
+    const freshItem = toTreeItem(fresh);
+    check(
+      'a fallback-named session with a branch is labeled by the branch',
+      freshItem.label === 'fix-auth',
+      String(freshItem.label),
+    );
+    check(
+      'and the branch is not repeated in its description',
+      !String(freshItem.description ?? '').includes('fix-auth'),
+      String(freshItem.description),
+    );
+    check(
+      'while the fallback name moves into the description',
+      String(freshItem.description ?? '').includes('a1b2c3d4'),
+      String(freshItem.description),
+    );
+    const titled = toTreeItem({ ...fresh, title: 'Fix the auth flow' });
+    check(
+      'a title still beats the branch',
+      titled.label === 'Fix the auth flow',
+      String(titled.label),
+    );
+    const named = toTreeItem({ ...fresh, name: 'peaceful-boat' });
+    check(
+      'a real record name still beats the branch',
+      named.label === 'peaceful-boat',
+      String(named.label),
+    );
+    const branchless = toTreeItem({ ...fresh, branch: undefined });
+    check(
+      'no branch, no title: the fallback name stays',
+      branchless.label === 'a1b2c3d4',
+      String(branchless.label),
+    );
+  }
+
   console.log('\nTooltips name the state in words');
   {
     const generating = session('generating', [runningAgent()]);

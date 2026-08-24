@@ -226,6 +226,123 @@ async function main(): Promise<void> {
     provider.dispose();
   }
 
+  console.log('\nWorktree projects nest under their origin');
+  {
+    const wt: ProjectNode = {
+      ...project('/work/alpha-worktrees/fix-auth', ['fix the auth flow']),
+      worktree: true,
+      parentDir: '/work/alpha',
+    };
+    const orphan: ProjectNode = {
+      ...project('/work/orphan-worktrees/stray', ['stray work']),
+      worktree: true,
+      parentDir: '/work/nowhere',
+    };
+    const nestedRegistry = fakeRegistry(snapshotOf([alpha, beta, wt, orphan]));
+    const pins = new PinStore(fakeMemento());
+    const provider = new RailTreeProvider(nestedRegistry, pins);
+    const roots = provider.getChildren();
+    check(
+      'a linked worktree leaves the root list',
+      !roots.some((node) => node.kind === 'project' && node.dir === wt.dir),
+      labels(roots).join(', '),
+    );
+    const alphaChildren = provider.getChildren(alpha);
+    check(
+      'and renders under its origin, after the sessions',
+      alphaChildren[alphaChildren.length - 1] === wt,
+      String(alphaChildren.length),
+    );
+    check('the worktree row resolves its parent project', provider.getParent(wt) === alpha);
+    check(
+      'a session under a nested worktree resolves the worktree',
+      provider.getParent(wt.sessions[0]) === wt,
+    );
+    check(
+      'the worktree context value survives nesting',
+      provider.getTreeItem(wt).contextValue === 'project.worktree',
+    );
+    const alphaItem = provider.getTreeItem(alpha);
+    check(
+      'the origin row counts its worktrees',
+      String(alphaItem.description).includes('1 worktree'),
+      String(alphaItem.description),
+    );
+    check(
+      'a worktree whose origin row is absent stays at the root',
+      roots.some((node) => node.kind === 'project' && node.dir === orphan.dir),
+      labels(roots).join(', '),
+    );
+
+    provider.setFilter('fix the auth');
+    const flat = provider.getChildren();
+    check(
+      'a search renders flat — the matching worktree surfaces at the root',
+      flat.some((node) => node.kind === 'project' && node.dir === wt.dir),
+      labels(flat).join(', '),
+    );
+    provider.setFilter('');
+    provider.dispose();
+  }
+
+  console.log('\nWorktrees and pins');
+  {
+    const wt: ProjectNode = {
+      ...project('/work/alpha-worktrees/fix-auth', ['fix the auth flow']),
+      worktree: true,
+      parentDir: '/work/alpha',
+    };
+    const nestedRegistry = fakeRegistry(snapshotOf([alpha, beta, wt]));
+
+    // A pinned worktree renders in the accordion, never twice.
+    const pinnedWt = new RailTreeProvider(nestedRegistry, new PinStore(fakeMemento([wt.dir])));
+    const section = sectionOf(pinnedWt.getChildren());
+    check('a pinned worktree sits in the accordion', section?.projects[0] === wt);
+    check(
+      'and is not repeated under its origin',
+      !pinnedWt.getChildren(alpha).includes(wt),
+      String(pinnedWt.getChildren(alpha).length),
+    );
+    check('its parent is the section, not the origin', pinnedWt.getParent(wt) === section);
+    check(
+      'and it offers Unpin as a worktree',
+      pinnedWt.getTreeItem(wt).contextValue === 'project.worktree.pinned',
+    );
+    pinnedWt.dispose();
+
+    // A pinned origin keeps its worktree nested inside the accordion.
+    const pinnedOrigin = new RailTreeProvider(nestedRegistry, new PinStore(fakeMemento([alpha.dir])));
+    check(
+      'a worktree follows its pinned origin into the accordion',
+      pinnedOrigin.getChildren(alpha).includes(wt) && pinnedOrigin.getParent(wt) === alpha,
+    );
+    check(
+      'the reveal chain continues to the section',
+      pinnedOrigin.getParent(alpha) === sectionOf(pinnedOrigin.getChildren()),
+    );
+    pinnedOrigin.dispose();
+
+    // A pinned origin with nothing running still shows its worktrees: the
+    // placeholder is the parent, and it must be expandable.
+    const orphanRegistry = fakeRegistry(snapshotOf([wt]));
+    const placeholderPins = new RailTreeProvider(
+      orphanRegistry,
+      new PinStore(fakeMemento(['/work/alpha'])),
+    );
+    const placeholder = sectionOf(placeholderPins.getChildren())?.projects[0];
+    check(
+      'a placeholder origin carries its worktree',
+      placeholder !== undefined && placeholderPins.getChildren(placeholder).includes(wt),
+    );
+    check(
+      'and renders expandable despite having no sessions',
+      placeholder !== undefined &&
+        placeholderPins.getTreeItem(placeholder).collapsibleState !== 0,
+      String(placeholder ? placeholderPins.getTreeItem(placeholder).collapsibleState : 'none'),
+    );
+    placeholderPins.dispose();
+  }
+
   console.log('\nStored value from another version');
   {
     const pins = new PinStore(fakeMemento({ alpha: true }));

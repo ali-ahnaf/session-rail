@@ -43,6 +43,7 @@ import { isAlive, readSessionRecords } from './sessions';
 import { Tailer } from './tailer';
 import { readTasks } from './tasks';
 import { forgetTitles, readAiTitle, sanitizeTitle } from './titles';
+import { isWorktreeDir, mainRepoFor } from './worktree';
 
 export interface RailRegistry extends vscode.Disposable {
   readonly onDidChange: vscode.Event<Snapshot>;
@@ -131,6 +132,8 @@ class Registry implements RailRegistry {
   /** transcript file → newest record timestamp ever seen in it (ms). */
   private readonly activity = new Map<string, number>();
   private readonly gitRoots = new Map<string, string | undefined>();
+  /** dir → worktree marker plus the main repo it links to, memoized like gitRoots. */
+  private readonly worktreeMeta = new Map<string, { worktree: boolean; parentDir?: string }>();
   private readonly sessionIndex = new Map<string, SessionNode>();
   private readonly agentIndex = new Map<string, AgentNode>();
 
@@ -189,6 +192,7 @@ class Registry implements RailRegistry {
     this.scans.clear();
     this.activity.clear();
     this.gitRoots.clear();
+    this.worktreeMeta.clear();
     this.emitter.dispose();
   }
 
@@ -539,6 +543,7 @@ class Registry implements RailRegistry {
       const dir = this.projectDirFor(session, config);
       let project = byDir.get(dir);
       if (!project) {
+        const { worktree, parentDir } = this.worktreeMetaFor(dir);
         project = {
           kind: 'project',
           id: dir,
@@ -546,6 +551,8 @@ class Registry implements RailRegistry {
           dir,
           sessions: [],
           liveCount: 0,
+          worktree,
+          parentDir,
         };
         byDir.set(dir, project);
       }
@@ -589,6 +596,23 @@ class Registry implements RailRegistry {
     }
     this.gitRoots.set(cwd, undefined);
     return undefined;
+  }
+
+  /**
+   * Whether the project dir is a linked git worktree, and the main repo it
+   * belongs to when it is — that link is what lets the tree provider nest the
+   * row under the project it was created from. Memoized like gitRoots; a fs
+   * error just means "not a worktree".
+   */
+  private worktreeMetaFor(dir: string): { worktree: boolean; parentDir?: string } {
+    const cached = this.worktreeMeta.get(dir);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const worktree = isWorktreeDir(dir);
+    const meta = worktree ? { worktree, parentDir: mainRepoFor(dir) } : { worktree };
+    this.worktreeMeta.set(dir, meta);
+    return meta;
   }
 
   private scanFor(sessionId: string): SessionScan {

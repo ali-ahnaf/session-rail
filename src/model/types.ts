@@ -112,6 +112,21 @@ export interface ProjectNode {
   sessions: SessionNode[];
   /** Count of sessions whose state is not 'exited'. */
   liveCount: number;
+  /**
+   * True when `dir` is a linked git worktree (its `.git` is a file). Set by the
+   * registry, which is the layer allowed to touch the filesystem; drives the
+   * `project.worktree*` contextValues so Remove Worktree is only offered where
+   * it can work. Absent on pinned placeholders the tree synthesizes.
+   */
+  worktree?: boolean;
+  /**
+   * For a worktree project: the main repository it was created from, parsed
+   * from its `.git` file's `gitdir:` line. The tree provider nests the row
+   * under the project with this dir when that row is visible; the snapshot's
+   * own `projects` list stays flat, so status bar and progress consumers never
+   * have to walk a hierarchy.
+   */
+  parentDir?: string;
 }
 
 export interface SessionNode {
@@ -153,6 +168,26 @@ export interface SessionNode {
   /** Depth-1 agents only; deeper agents hang off `AgentNode.children`. */
   agents: AgentNode[];
   tasks: TaskNode[];
+}
+
+/**
+ * What a session row shows, and what the search matches — the two must agree.
+ *
+ * The `ai-title` once one lands; before that the git branch, when the name is
+ * only the derived sessionId fallback — a fresh worktree session should read
+ * `fix-auth`, not `a1b2c3d4` (its branch IS its point, and it is also the
+ * label its terminal was opened under). A real name from the session record
+ * always wins over the branch: many sessions share `main`, and rows that
+ * cannot be told apart are worse than opaque ones.
+ */
+export function sessionLabel(session: SessionNode): string {
+  if (session.title !== undefined) {
+    return session.title;
+  }
+  if (session.branch !== undefined && session.name === session.sessionId.slice(0, 8)) {
+    return session.branch;
+  }
+  return session.name;
 }
 
 export interface AgentNode {
