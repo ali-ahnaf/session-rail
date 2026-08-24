@@ -101,6 +101,17 @@
         "icon": "$(add)"
       },
       {
+        "command": "sessionRail.newWorktreeSession",
+        "title": "New Worktree Session",
+        "category": "Session Rail",
+        "icon": "$(git-branch)"
+      },
+      {
+        "command": "sessionRail.removeWorktree",
+        "title": "Remove Worktree",
+        "category": "Session Rail"
+      },
+      {
         "command": "sessionRail.openTranscript",
         "title": "Open Transcript",
         "category": "Session Rail",
@@ -225,12 +236,12 @@
         },
         {
           "command": "sessionRail.pinProject",
-          "when": "view == sessionRail.tree && viewItem == project",
+          "when": "view == sessionRail.tree && (viewItem == project || viewItem == project.worktree)",
           "group": "inline@2"
         },
         {
           "command": "sessionRail.unpinProject",
-          "when": "view == sessionRail.tree && viewItem == project.pinned",
+          "when": "view == sessionRail.tree && (viewItem == project.pinned || viewItem == project.worktree.pinned)",
           "group": "inline@2"
         },
         {
@@ -242,6 +253,11 @@
           "command": "sessionRail.newSession",
           "when": "view == sessionRail.tree && viewItem =~ /^project/",
           "group": "navigation@1"
+        },
+        {
+          "command": "sessionRail.newWorktreeSession",
+          "when": "view == sessionRail.tree && viewItem =~ /^project(\\.pinned)?$/",
+          "group": "navigation@2"
         },
         {
           "command": "sessionRail.focusTerminal",
@@ -265,12 +281,12 @@
         },
         {
           "command": "sessionRail.pinProject",
-          "when": "view == sessionRail.tree && viewItem == project",
+          "when": "view == sessionRail.tree && (viewItem == project || viewItem == project.worktree)",
           "group": "navigation@5"
         },
         {
           "command": "sessionRail.unpinProject",
-          "when": "view == sessionRail.tree && viewItem == project.pinned",
+          "when": "view == sessionRail.tree && (viewItem == project.pinned || viewItem == project.worktree.pinned)",
           "group": "navigation@5"
         },
         {
@@ -282,11 +298,24 @@
           "command": "sessionRail.stopSession",
           "when": "view == sessionRail.tree && viewItem == session.live",
           "group": "9_danger"
+        },
+        {
+          "command": "sessionRail.removeWorktree",
+          "when": "view == sessionRail.tree && viewItem =~ /^project\\.worktree/",
+          "group": "9_danger"
         }
       ],
       "commandPalette": [
         {
           "command": "sessionRail.newSession",
+          "when": "false"
+        },
+        {
+          "command": "sessionRail.newWorktreeSession",
+          "when": "false"
+        },
+        {
+          "command": "sessionRail.removeWorktree",
           "when": "false"
         },
         {

@@ -9,7 +9,13 @@
  * Run: npm run check:registry
  */
 
-import { walkAgents, type AgentNode, type RailNode, type Snapshot } from '../src/model/types';
+import {
+  sessionLabel,
+  walkAgents,
+  type AgentNode,
+  type RailNode,
+  type Snapshot,
+} from '../src/model/types';
 import { createRegistry } from '../src/scan/registry';
 import { toTreeItem } from '../src/tree/items';
 
@@ -66,14 +72,15 @@ function render(snapshot: Snapshot): void {
       const bits = [session.state, session.branch, session.model, session.effort]
         .filter(Boolean)
         .join(' · ');
-      // The label as the sidebar renders it: Claude Code's `ai-title` when the
-      // transcript carries one, its derived name otherwise.
+      // The label as the sidebar renders it — `sessionLabel`: `ai-title` when
+      // the transcript carries one, the branch while the name is only the
+      // sessionId fallback, the derived name otherwise.
       // `padEnd` pads but never truncates, and a title runs to 60 chars — slice
       // first or the columns stop lining up next to reality.
-      const label = (session.title ?? session.name).slice(0, LABEL_WIDTH);
+      const label = sessionLabel(session).slice(0, LABEL_WIDTH);
       console.log(
         `    ${label.padEnd(LABEL_WIDTH)} ${
-          session.title !== undefined ? `[${session.name}] ` : ''
+          label !== session.name ? `[${session.name}] ` : ''
         }${bits}  [${iconOf(session)}]`,
       );
       const indent = (depth: number): string => '      ' + '  '.repeat(depth - 1);

@@ -80,6 +80,7 @@ transcript/    read-only webview transcript reader
 workspace/
   explorer     show a directory in the Explorer (add root / reveal)
   scratchpad   create a throwaway .md next to the work and open it
+  worktree     git worktree create/remove — the one module that shells out to git
 extension.ts   activation + command wiring only — a switchboard, no logic
 ```
 
@@ -98,7 +99,7 @@ stays runnable outside the extension host.
   of those or a bare shell. The extension still writes nothing into `~/.claude`
   itself — but those processes do, so never point one at a transcript another
   live process owns (see the fork rule below).
-- **Two commands write outside `~/.claude`; nothing writes inside it.** The
+- **A few commands write outside `~/.claude`; nothing writes inside it.** The
   Scratchpad branch of `newSessionHome` creates a new `scratchpad-<timestamp>.md`
   in the chosen folder (`src/workspace/scratchpad.ts`) — always opened `wx`, so
   an existing file makes it move to the next `-2` suffix instead of truncating
@@ -110,7 +111,15 @@ stays runnable outside the extension host.
   user data and `migrateWorkspaceSettings` copies folder-scoped settings into it.
   Hence **add-only, never toggle** — a stray click must not remove a root the
   user arranged by hand, so a directory already reachable from a root is only
-  revealed. Two clicks are gated behind a modal confirm because they are
+  revealed. The worktree pair (`newWorktreeSession`/`removeWorktree`,
+  `src/workspace/worktree.ts`) writes into the user's own filesystem via `git`:
+  create adds `<parent>/<repo>-worktrees/<name>` (name validated by
+  `validateWorktreeName` before it becomes a path and a branch; always
+  `execFile` with an args array, never a shell string), and remove — the one
+  action that deletes a directory — sits behind a modal confirm, refuses while
+  any session in it is live, and needs a second explicit confirm before
+  `--force` on a dirty tree; the branch is never deleted. Two clicks are gated
+  behind a modal confirm because they are
   expensive rather than wrong: `os.homedir()` (an ordinary row to click —
   `newSessionHome` still falls back to it when no folder is open — and one that
   puts a recursive watcher over the whole home dir) and the filesystem root. See
@@ -346,9 +355,10 @@ check into a passing no-op.
 
 - View container `sessionRail`, view `sessionRail.tree`.
 - Commands: `sessionRail.` + `refresh`, `focusTerminal`, `newSession`,
-  `newSessionHome`, `openTranscript`, `showInExplorer`, `revealFolder`,
-  `copySessionId`, `stopSession`, `toggleTasks`, `showExited`, `hideExited`,
-  `pinProject`, `unpinProject`, `searchSessions`, `clearSearch`, `showLog`.
+  `newSessionHome`, `newWorktreeSession`, `removeWorktree`, `openTranscript`,
+  `showInExplorer`, `revealFolder`, `copySessionId`, `stopSession`,
+  `toggleTasks`, `showExited`, `hideExited`, `pinProject`, `unpinProject`,
+  `searchSessions`, `clearSearch`, `showLog`.
 - `showInExplorer` is the `$(folder-opened)` inline icon at the right end of
   every project and session row (`inline@3`, after `newSession`/`focusTerminal`
   at `@1` and `openTranscript` at `@2`). It is **not** `revealFolder`, which is
@@ -366,13 +376,19 @@ check into a passing no-op.
   setting; the config listener flips the key, so the icon stays right when the
   setting is changed from the Settings UI instead.
 - `contextValue` strings the menus key off — only these are ever set:
-  `project`, `project.pinned`, `session.live`, `session.exited`, `agent`, `task`.
+  `project`, `project.pinned`, `project.worktree`, `project.worktree.pinned`,
+  `session.live`, `session.exited`, `agent`, `task`.
   Session state beyond live/exited affects icon color only, never
-  `contextValue`; `project.pinned` is the one value that carries more than a node
-  kind, because a row must offer Pin or Unpin and never both. Every project-row
-  menu is therefore gated on `viewItem =~ /^project/` rather than
+  `contextValue`; the project values carry two flags beyond the node kind, in a
+  fixed order `project[.worktree][.pinned]` — a row must offer Pin or Unpin and
+  never both, and Remove Worktree only where git can remove one. Every
+  project-row menu is therefore gated on `viewItem =~ /^project/` rather than
   `viewItem == project` — add a menu for projects and it needs the regex, or it
-  silently disappears the moment the folder is pinned. The search row and the
+  silently disappears the moment the folder is pinned or is a worktree. The
+  pin pair is the exception (exact-match lists, one per flag combination), and
+  `newWorktreeSession` deliberately excludes worktree rows
+  (`/^project(\.pinned)?$/`) — a worktree of a worktree lands in a nested
+  `-worktrees` folder nobody expects. The search row and the
   `Pinned` section row set **none** — they own no menus.
 - **Pinning is `globalState`, not a setting and not a snapshot field.**
   `pinProject`/`unpinProject` are the `$(pin)`/`$(pinned)` inline icon at
@@ -407,8 +423,12 @@ check into a passing no-op.
   (an empty root hands the view to `viewsWelcome`, which would claim the machine
   has no sessions), and while a filter is active project rows render `Expanded`
   regardless of `liveCount` (a collapsed match is an invisible match). Matching
-  is a trimmed, case-insensitive substring of the label — `title ?? name`, so a
-  live session with no `ai-title` yet is still findable.
+  is a trimmed, case-insensitive substring of the label — `sessionLabel` in
+  `model/types.ts`, the one fold items.ts also renders: title, then the git
+  branch while the name is only the sessionId fallback (a fresh worktree
+  session reads `fix-auth`, not an 8-char hash), then name. A live session
+  with no `ai-title` yet is still findable, and the search always matches
+  exactly what the row shows.
   **The search covers only what the tree is showing.** `registry.ts` drops exited
   and history rows when `showExited` is off, so with stock settings a search
   reaches live sessions only. That is why a zero-match row reads
@@ -434,9 +454,11 @@ check into a passing no-op.
 - `newSessionHome` is the same `+` in the view title bar, for work that belongs
   to no project row yet. Taking no node, it asks the two questions the row `+`
   already knows: **what** and **where**.
-  What is a three-way `showQuickPick` — Claude Session (`startSession`, exactly
-  what the button always did), Scratchpad (`createScratchpad`), Terminal
-  (`startTerminal`, a plain shell with nothing sent). Session stays first so the
+  What is a four-way `showQuickPick` — Claude Session (`startSession`, exactly
+  what the button always did), Scratchpad (`createScratchpad`), Worktree
+  Session (`newWorktreeSession` — worktree of the repo containing the target,
+  then `startSession` in it), Terminal (`startTerminal`, a plain shell with
+  nothing sent). Session stays first so the
   original behavior is still the default landing item. The item type is
   `QuickPickItem & { action }` — **never `kind`**, which is VS Code's own
   separator enum and intersects to `never`.
@@ -452,6 +474,34 @@ check into a passing no-op.
   It takes no node, so unlike the other node-driven commands it stays visible in
   the command palette (the title is "New Session, Scratchpad, or Terminal"; the
   id keeps the `Home` spelling so existing keybindings survive).
+- `newWorktreeSession` lives in the project-row context menu (`navigation@2`,
+  no inline icon — the three inline slots are taken) and in the header pick. It
+  prompts for a name (`validateWorktreeName`, live "already exists" check),
+  runs `git worktree add <target> -b <name>` from the containing repo root —
+  falling back to a plain checkout when the branch already exists — then
+  `startSession` in the new directory. The row appears on a later poll like any
+  new session; `ProjectNode.worktree` (set by the registry, the layer allowed
+  to stat) marks it with a `worktree` description segment and the
+  `project.worktree*` contextValues. `removeWorktree` is context-menu only, in
+  `9_danger` on `/^project\.worktree/` rows.
+- **Worktree rows nest under the project they were created from — but only in
+  the view.** `ProjectNode.parentDir` is the main repo, parsed by the registry
+  from the worktree's `.git` file (`scan/worktree.ts`, the read side; the
+  git-running write side is `workspace/worktree.ts`, which re-exports it —
+  split that way because `scan/` may not import from `workspace/`). The
+  nesting itself is provider presentation state (`nestWorktrees` in
+  `tree/provider.ts`), NOT a snapshot shape: `Snapshot.projects` stays flat, so
+  the status bar and the header progress never walk a hierarchy. Rules the
+  checks pin: a row renders exactly once (a pinned worktree stays in the
+  accordion and is not repeated under its origin; a worktree whose origin row
+  is absent stays at the root rather than vanishing); a pinned origin — even a
+  placeholder with no sessions — carries its worktrees; and an active search
+  renders flat, because the search is over sessions and a parent kept alive
+  only to carry a matching child would itself read as a match. The origin row
+  gets `N worktrees` in its description and counts nested live sessions toward
+  its expansion (`nestedWorktrees`/`nestedLive` in `RenderOptions`) — its own
+  spinner and `N working` stay own-sessions-only, the header bar covers the
+  rest.
 - `focusTerminal` is the click action on every session row, live or exited, and
   never dead-ends: it focuses the hosting terminal if this window has one, else
   reuses the terminal it opened earlier for that session, else opens a new one
