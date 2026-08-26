@@ -41,11 +41,18 @@ export class TranscriptPanel {
     this.title = info.title;
     this.transcriptPath = info.transcriptPath;
 
+    // `retainContextWhenHidden` is deliberately NOT set. It keeps the whole
+    // webview DOM — up to MAX_TAIL_BYTES of rendered transcript — alive for as
+    // long as the tab exists, hidden or not, and VS Code's own docs call out its
+    // memory cost. A hidden panel here has nothing worth retaining: VS Code
+    // re-applies `webview.html` when the tab is revealed, so the content comes
+    // back on its own, and the only DOM state that matters across a hide is the
+    // scroll position, which the page checkpoints through `setState` instead.
     this.panel = vscode.window.createWebviewPanel(
       'sessionRail.transcript',
       this.title,
       vscode.ViewColumn.Beside,
-      { enableScripts: true, retainContextWhenHidden: true },
+      { enableScripts: true },
     );
 
     this.panel.onDidDispose(() => {
@@ -439,6 +446,26 @@ function renderHtml(nonce: string, title: string, body: string, cspSource: strin
   const vscode = acquireVsCodeApi();
   document.getElementById('reload').addEventListener('click', () => {
     vscode.postMessage({ command: 'reload' });
+  });
+
+  // The panel is not retained while hidden, so this script re-runs every time
+  // the tab is revealed. Webview state survives that teardown; restore the
+  // scroll offset so a hide/show round-trip looks like the tab never moved.
+  const saved = vscode.getState();
+  if (saved && typeof saved.scrollY === 'number') {
+    window.scrollTo(0, saved.scrollY);
+  }
+  let pending = 0;
+  window.addEventListener('scroll', () => {
+    if (pending !== 0) {
+      return;
+    }
+    // Coalesced: scroll fires per frame and each setState is a round-trip to
+    // the extension host.
+    pending = window.setTimeout(() => {
+      pending = 0;
+      vscode.setState({ scrollY: window.scrollY });
+    }, 150);
   });
 </script>
 </body>

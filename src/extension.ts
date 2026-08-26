@@ -37,8 +37,10 @@ import { createScratchpad } from './workspace/scratchpad';
 import {
   createWorktree,
   gitRootOf,
+  listLocalBranches,
   removeWorktree,
   validateWorktreeName,
+  worktreeFolderName,
   worktreeParentFor,
 } from './workspace/worktree';
 
@@ -170,7 +172,9 @@ function registerCommands(
       if (!project) {
         return;
       }
-      await newWorktreeSession(project.dir);
+      // globalStorage is where VS Code lets this extension write; the worktree
+      // module takes it as an argument so it never has to import `vscode`.
+      await newWorktreeSession(project.dir, context.globalStorageUri.fsPath);
     }),
 
     register('sessionRail.removeWorktree', async (node) => {
@@ -215,11 +219,6 @@ function registerCommands(
             `Cannot open a terminal in ${dir}: the folder does not exist.`,
           );
         }
-        return;
-      }
-
-      if (kind === 'worktree') {
-        await newWorktreeSession(dir);
         return;
       }
 
@@ -387,12 +386,119 @@ async function stopSession(session: SessionNode, registry: RailRegistry): Promis
 // ─────────────────────────────────────────────────────────────
 
 /**
- * Ask for a name, create the worktree, start `claude` in it. Shared by the
- * project-row command and the header `+` so both behave identically. `dir` may
- * be anywhere inside the repo — the worktree is made of the containing repo,
- * which is what a subdirectory-grouped row means by "this project".
+ * Ask for a branch name, create the worktree, start `claude` in it. Driven only
+ * from the project row's `$(git-branch)` icon — the row is the repo. `dir` may
+ * be anywhere inside that repo: the worktree is made of the containing repo,
+ * which is what a subdirectory-grouped row means by "this project". `base` is
+ * the extension's globalStorage path, the root every worktree lands under.
  */
-async function newWorktreeSession(dir: string): Promise<void> {
+/**
+ * The new-worktree prompt: every local branch of the repo, searchable, plus
+ * whatever the user types as a new branch.
+ *
+ * A QuickPick rather than an InputBox because both readings of "which branch"
+ * are ordinary — check out one that exists, or start one that does not — and a
+ * plain input box only supported the second while silently accepting a typo of
+ * the first. `createWorktree` already handles both (it retries `-b <name>` as a
+ * plain checkout when the branch exists), so the pick only has to decide the
+ * string.
+ *
+ * A QuickPick has no `validateInput`, so the reasons a choice cannot be used
+ * ride on the items instead: an unusable row is listed with its reason in
+ * `detail` and flagged `unusable`, and accepting it is a no-op that leaves the
+ * pick open. Listing them beats hiding them — a branch missing from the list
+ * reads as "this repo does not have it".
+ */
+interface BranchItem extends vscode.QuickPickItem {
+  /** The branch name to create the worktree on. Absent on unusable rows. */
+  branch?: string;
+  /** True when the row explains why it cannot be picked. */
+  unusable?: boolean;
+}
+
+async function pickWorktreeBranch(root: string, parent: string): Promise<string | undefined> {
+  const pick = vscode.window.createQuickPick<BranchItem>();
+  pick.title = `New worktree of ${basename(root)}`;
+  pick.placeholder = `Pick a branch, or type a new one — created under ${parent}`;
+  pick.matchOnDescription = true;
+  pick.busy = true;
+
+  try {
+    const branches = await listLocalBranches(root);
+    const names = new Set(branches.map((branch) => branch.name));
+    const existing: BranchItem[] = branches.map((branch) => {
+      // A branch git already has checked out somewhere cannot get a second
+      // worktree; say where, since that is the next thing the user needs.
+      if (branch.checkedOutIn !== undefined) {
+        return {
+          label: branch.name,
+          description: branch.current ? 'current branch' : 'checked out',
+          detail: `Already checked out in ${branch.checkedOutIn}.`,
+          unusable: true,
+        };
+      }
+      return { label: branch.name, branch: branch.name };
+    });
+
+    // The typed value becomes a "create" row unless a branch already owns that
+    // exact name — then the branch row is the honest answer.
+    const createItem = (value: string): BranchItem[] => {
+      const trimmed = value.trim();
+      if (trimmed.length === 0 || names.has(trimmed)) {
+        return [];
+      }
+      const invalid = validateWorktreeName(trimmed);
+      if (invalid !== undefined) {
+        return [{ label: `$(plus) ${trimmed}`, detail: invalid, alwaysShow: true, unusable: true }];
+      }
+      // The branch keeps its slashes; the folder does not, so the existence
+      // check has to be made against the path that will actually be created.
+      const target = join(parent, worktreeFolderName(trimmed));
+      if (existsSync(target)) {
+        return [
+          {
+            label: `$(plus) ${trimmed}`,
+            detail: `${target} already exists.`,
+            alwaysShow: true,
+            unusable: true,
+          },
+        ];
+      }
+      return [
+        {
+          label: `$(plus) ${trimmed}`,
+          description: 'create new branch',
+          branch: trimmed,
+          alwaysShow: true,
+        },
+      ];
+    };
+
+    pick.items = existing;
+    pick.busy = false;
+
+    return await new Promise<string | undefined>((resolve) => {
+      pick.onDidChangeValue((value) => {
+        pick.items = [...createItem(value), ...existing];
+      });
+      pick.onDidAccept(() => {
+        const selected = pick.selectedItems[0];
+        if (selected === undefined || selected.unusable === true) {
+          // Nothing usable chosen — leave the pick open with its reason shown.
+          return;
+        }
+        resolve(selected.branch);
+        pick.hide();
+      });
+      pick.onDidHide(() => resolve(undefined));
+      pick.show();
+    });
+  } finally {
+    pick.dispose();
+  }
+}
+
+async function newWorktreeSession(dir: string, base: string): Promise<void> {
   const root = gitRootOf(dir);
   if (root === undefined) {
     void vscode.window.showWarningMessage(
@@ -401,29 +507,17 @@ async function newWorktreeSession(dir: string): Promise<void> {
     return;
   }
 
-  const parent = worktreeParentFor(root);
-  const name = await vscode.window.showInputBox({
-    title: `New worktree of ${basename(root)}`,
-    prompt: `Folder and branch name — created under ${parent}`,
-    placeHolder: 'fix-auth',
-    validateInput: (value) => {
-      const trimmed = value.trim();
-      const invalid = validateWorktreeName(trimmed);
-      if (invalid !== undefined) {
-        return invalid;
-      }
-      return existsSync(join(parent, trimmed)) ? `${join(parent, trimmed)} already exists.` : undefined;
-    },
-  });
+  const parent = worktreeParentFor(root, base);
+  const name = await pickWorktreeBranch(root, parent);
   if (name === undefined) {
     // Escape starts nothing.
     return;
   }
 
-  const result = await createWorktree(root, name.trim());
+  const result = await createWorktree(root, name, base);
   switch (result.outcome) {
     case 'created':
-      if (result.dir !== undefined && startSession(result.dir, name.trim()) === 'missing-dir') {
+      if (result.dir !== undefined && startSession(result.dir, name) === 'missing-dir') {
         void vscode.window.showWarningMessage(
           `Created the worktree but ${result.dir} is not readable. See the Session Rail log.`,
         );
@@ -516,8 +610,14 @@ async function removeWorktreeCommand(project: ProjectNode, registry: RailRegistr
 // command palette, or a keybinding, and only the tree supplies a real node.
 // ─────────────────────────────────────────────────────────────
 
-/** What the view-title `+` can start. */
-type HeaderAction = 'session' | 'scratchpad' | 'terminal' | 'worktree';
+/**
+ * What the view-title `+` can start.
+ *
+ * Worktrees are deliberately not here: a worktree is always *of* a repo, and
+ * the header `+` acts on the window's folder, which need not be one. It lives
+ * on the project row instead, where the repo is the row.
+ */
+type HeaderAction = 'session' | 'scratchpad' | 'terminal';
 
 /**
  * Ask what the `+` should open. Escape returns undefined and starts nothing.
@@ -538,11 +638,6 @@ async function pickHeaderAction(): Promise<HeaderAction | undefined> {
       action: 'scratchpad',
       label: '$(note) Scratchpad',
       detail: 'Create a new Markdown file and open it in a tab',
-    },
-    {
-      action: 'worktree',
-      label: '$(git-branch) Worktree Session',
-      detail: 'Create a git worktree next to the repo and run `claude` in it',
     },
     {
       action: 'terminal',
@@ -589,7 +684,6 @@ const PLACEHOLDERS: Record<HeaderAction, string> = {
   session: 'Start a Claude session in…',
   scratchpad: 'Create a scratchpad in…',
   terminal: 'Open a terminal in…',
-  worktree: 'Create a worktree of…',
 };
 
 function isRailNode(value: unknown): value is RailNode {

@@ -205,9 +205,11 @@ function buildProjectItem(node: ProjectNode, options: RenderOptions): RailTreeIt
     // A bare number here would read as a live count, which is exactly what it
     // is not.
     description.push(`${node.sessions.length} past`);
-  } else if (pinned) {
-    // Only a pinned row can be here with nothing under it, and a bare label
-    // would look like a folder whose sessions failed to load.
+  } else if (pinned || node.worktree === true) {
+    // Two rows can be here with nothing under them — a pinned placeholder and
+    // an idle worktree (which the registry lists whether or not anything runs
+    // in it) — and a bare label would look like a folder whose sessions failed
+    // to load.
     description.push('no sessions');
   }
   if (working > 0) {
@@ -227,13 +229,18 @@ function buildProjectItem(node: ProjectNode, options: RenderOptions): RailTreeIt
   if (description.length > 0) {
     item.description = description.join(' \u00b7 ');
   }
-  // While anything under here is generating, the spinner takes the icon slot —
-  // so a pinned project temporarily stops advertising its pin. Pin state stays
-  // readable from the `Pinned` section, the context menu, and `contextValue`.
+  // One slot, three claims on it, in this order: a spinner while anything under
+  // here is generating, then `git-branch` on a worktree, then `pinned`. So a
+  // pinned project can stop advertising its pin — pin state stays readable from
+  // the `Pinned` section, the context menu, and `contextValue`, whereas a
+  // worktree row nested under an ordinary-looking repo row has nowhere else to
+  // say what it is except the description text beside it.
   item.iconPath =
     working > 0 && motionAllowed()
       ? new vscode.ThemeIcon('loading~spin', new vscode.ThemeColor('sessionRail.working'))
-      : new vscode.ThemeIcon(pinned ? 'pinned' : 'folder');
+      : new vscode.ThemeIcon(
+          node.worktree === true ? 'git-branch' : pinned ? 'pinned' : 'folder',
+        );
   // Two flags ride the contextValue beyond the node kind, in a fixed order:
   // `project[.worktree][.pinned]`. The menus need Pin or Unpin (never both) and
   // Remove Worktree only on rows where git can actually remove one.

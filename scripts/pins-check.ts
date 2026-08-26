@@ -11,6 +11,8 @@
  * Run: npm run check:pins
  */
 
+import * as vscode from 'vscode';
+
 import type { ProjectNode, RailNode, SectionNode, Snapshot } from '../src/model/types';
 import type { RailRegistry } from '../src/scan/registry';
 import { RailTreeProvider } from '../src/tree/provider';
@@ -92,6 +94,12 @@ function labels(nodes: RailNode[]): string[] {
 
 function sectionOf(roots: RailNode[]): SectionNode | undefined {
   return roots.find((node): node is SectionNode => node.kind === 'section');
+}
+
+/** The codicon id a row rendered, or '' when it is not a ThemeIcon. */
+function iconId(item: vscode.TreeItem): string {
+  const icon = item.iconPath;
+  return icon instanceof vscode.ThemeIcon ? icon.id : '';
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -262,6 +270,11 @@ async function main(): Promise<void> {
       'the worktree context value survives nesting',
       provider.getTreeItem(wt).contextValue === 'project.worktree',
     );
+    check(
+      'a worktree row says so with its icon',
+      iconId(provider.getTreeItem(wt)) === 'git-branch',
+      iconId(provider.getTreeItem(wt)),
+    );
     const alphaItem = provider.getTreeItem(alpha);
     check(
       'the origin row counts its worktrees',
@@ -280,6 +293,61 @@ async function main(): Promise<void> {
       'a search renders flat — the matching worktree surfaces at the root',
       flat.some((node) => node.kind === 'project' && node.dir === wt.dir),
       labels(flat).join(', '),
+    );
+    provider.setFilter('');
+    provider.dispose();
+  }
+
+  console.log('\nA worktree with no sessions still renders');
+  {
+    // Sessions are what mint a project row, so an idle worktree arrives from
+    // the registry with an empty session list (`addIdleWorktrees`). It must
+    // still nest and still be visible, or exiting the last session inside a
+    // worktree looks like the worktree was removed.
+    const idle: ProjectNode = {
+      ...project('/work/alpha-worktrees/spike', []),
+      worktree: true,
+      parentDir: '/work/alpha',
+    };
+    const idleRegistry = fakeRegistry(snapshotOf([alpha, idle]));
+    const pins = new PinStore(fakeMemento());
+    const provider = new RailTreeProvider(idleRegistry, pins);
+    const roots = provider.getChildren();
+    check(
+      'an idle worktree leaves the root list too',
+      !roots.some((node) => node.kind === 'project' && node.dir === idle.dir),
+      labels(roots).join(', '),
+    );
+    const alphaChildren = provider.getChildren(alpha);
+    check(
+      'and renders under its origin',
+      alphaChildren.includes(idle),
+      labels(alphaChildren).join(', '),
+    );
+    check(
+      'the origin counts it as a worktree',
+      String(provider.getTreeItem(alpha).description).includes('1 worktree'),
+      String(provider.getTreeItem(alpha).description),
+    );
+    const idleItem = provider.getTreeItem(idle);
+    check(
+      'the row still reads as a worktree',
+      idleItem.contextValue === 'project.worktree' && iconId(idleItem) === 'git-branch',
+      `${String(idleItem.contextValue)} ${iconId(idleItem)}`,
+    );
+    check(
+      'and claims no sessions in its description',
+      !/\d/.test(String(idleItem.description ?? '')),
+      String(idleItem.description),
+    );
+
+    // The search is over sessions: a row with none cannot match, so it drops
+    // out rather than surfacing as a hit.
+    provider.setFilter('spike');
+    check(
+      'a search drops the sessionless worktree',
+      !provider.getChildren().some((node) => node.kind === 'project' && node.dir === idle.dir),
+      labels(provider.getChildren()).join(', '),
     );
     provider.setFilter('');
     provider.dispose();
@@ -307,6 +375,14 @@ async function main(): Promise<void> {
     check(
       'and it offers Unpin as a worktree',
       pinnedWt.getTreeItem(wt).contextValue === 'project.worktree.pinned',
+    );
+    // A worktree outranks a pin for the icon slot: pin state has the accordion,
+    // the menu, and the contextValue to say it with; `worktree` has the icon
+    // and its description segment.
+    check(
+      'and keeps the worktree icon while pinned',
+      iconId(pinnedWt.getTreeItem(wt)) === 'git-branch',
+      iconId(pinnedWt.getTreeItem(wt)),
     );
     pinnedWt.dispose();
 

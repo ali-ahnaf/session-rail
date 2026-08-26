@@ -3,9 +3,20 @@
  *
  * The orca model: run several Claude Code sessions against one repo without
  * them stomping each other's working tree, by giving each its own worktree.
- * Worktrees live in a sibling folder, `<parent>/<repo>-worktrees/<name>`, so
- * the repo itself stays untouched and every worktree groups as its own project
- * row (its `.git` is a file, which `gitRootFor` already treats as a root).
+ * Worktrees live outside every repo, under
+ * `<globalStorage>/worktrees/<repo>/<branch>`, so the repo itself stays
+ * untouched — not even an ignored directory appears in it — and every worktree
+ * groups as its own project row (its `.git` is a file, which `gitRootFor`
+ * already treats as a root). The `<repo>` level is not decoration: the base is
+ * shared by every repo on the machine, and without it two repos with a `main`
+ * branch would collide on one path.
+ *
+ * The base is `context.globalStorageUri.fsPath` — the directory VS Code hands
+ * this extension to write in. It is passed down rather than read here, so this
+ * module stays free of `vscode` and the checks can drive it with a temp dir.
+ * The obvious-looking `~/.vscode/extensions/session-rail/` is deliberately NOT
+ * used: that is VS Code's own extension install directory, which it prunes.
+ * globalStorage survives extension updates and is pruned by nothing.
  *
  * This module shells out to `git` — the one place the extension does. Always
  * `execFile` with an args array, never a shell string, and the name is
@@ -60,9 +71,34 @@ export function validateWorktreeName(name: string): string | undefined {
   return undefined;
 }
 
-/** Where worktrees of `repoRoot` live: a sibling `<repo>-worktrees` folder. */
-export function worktreeParentFor(repoRoot: string): string {
-  return path.join(path.dirname(repoRoot), `${path.basename(repoRoot)}-worktrees`);
+/**
+ * The subdirectory of globalStorage worktrees live in — so anything else this
+ * extension ever stores there cannot be mistaken for a repo.
+ */
+export const WORKTREE_DIR = 'worktrees';
+
+/**
+ * Where worktrees of `repoRoot` live: `<base>/worktrees/<repo>`.
+ *
+ * Deliberately outside the repo — a worktree nested inside its own main repo
+ * shows up as untracked in every `git status` and confuses tools that walk the
+ * tree. The per-repo level keeps two repos' identically-named branches apart.
+ */
+export function worktreeParentFor(repoRoot: string, base: string): string {
+  return path.join(base, WORKTREE_DIR, path.basename(repoRoot));
+}
+
+/**
+ * The folder for a branch: slashes flattened to dashes.
+ *
+ * Branch names are idiomatically `feat/auth`, but as a path that would mint an
+ * intermediate `feat` directory and leave the row labelled `auth` — so the
+ * folder is one flat segment and the branch keeps its real name. The two are
+ * no longer the same string; every path built for a worktree goes through here
+ * and every git branch argument does not.
+ */
+export function worktreeFolderName(branch: string): string {
+  return branch.split('/').join('-');
 }
 
 export interface CreateWorktreeResult {
@@ -74,13 +110,20 @@ export interface CreateWorktreeResult {
 }
 
 /**
- * Create a worktree of the repo containing `dir`, named and branched `name`.
+ * Create a worktree of the repo containing `dir`, branched `name` and foldered
+ * `worktreeFolderName(name)`.
  *
  * Tries `git worktree add -b <name>` first (new branch from HEAD); when git
  * refuses because the branch already exists, retries as a plain checkout of
- * that branch. Any other git failure is reported, never retried.
+ * that branch. Any other git failure is reported, never retried. git creates
+ * the leading directories itself, which is what makes the shared base and the
+ * `<repo>` level appear on first use with no mkdir here.
  */
-export async function createWorktree(dir: string, name: string): Promise<CreateWorktreeResult> {
+export async function createWorktree(
+  dir: string,
+  name: string,
+  base: string,
+): Promise<CreateWorktreeResult> {
   if (!existsSync(dir)) {
     log.warn(`Cannot create a worktree from ${dir}: the directory no longer exists`);
     return { outcome: 'missing-dir' };
@@ -96,7 +139,7 @@ export async function createWorktree(dir: string, name: string): Promise<CreateW
     return { outcome: 'not-a-repo' };
   }
 
-  const target = path.join(worktreeParentFor(root), name);
+  const target = path.join(worktreeParentFor(root, base), worktreeFolderName(name));
   if (existsSync(target)) {
     return { outcome: 'exists', dir: target };
   }
@@ -191,4 +234,59 @@ function runGit(args: readonly string[], cwd: string): Promise<GitResult> {
 
 function firstLine(text: string): string {
   return text.split('\n').find((line) => line.trim().length > 0)?.trim() ?? '';
+}
+
+/** A local branch of a repo, as offered in the new-worktree picker. */
+export interface LocalBranch {
+  /** Branch name as git prints it, slashes intact (`feat/auth`). */
+  name: string;
+  /**
+   * The directory this branch is currently checked out in — the main repo or
+   * an existing worktree — or undefined when it is checked out nowhere. git
+   * refuses a second worktree on a branch, so this is what makes an
+   * unusable choice visible before it is made.
+   */
+  checkedOutIn?: string;
+  /** True when this is HEAD of the repo the picker was opened from. */
+  current: boolean;
+}
+
+/**
+ * Every local branch of `repoRoot`, most recently committed first.
+ *
+ * `%(worktreepath)` is empty unless the branch is checked out somewhere, which
+ * covers the main repo and every linked worktree in one read. It arrived in
+ * git 2.23; on anything older the field prints literally, so it is only
+ * trusted when it looks like an absolute path. A failure here is not fatal —
+ * the picker still accepts a typed name — so it degrades to an empty list.
+ */
+export async function listLocalBranches(repoRoot: string): Promise<LocalBranch[]> {
+  const result = await runGit(
+    [
+      'for-each-ref',
+      '--sort=-committerdate',
+      '--format=%(refname:short)%09%(worktreepath)%09%(HEAD)',
+      'refs/heads',
+    ],
+    repoRoot,
+  );
+  if (!result.ok) {
+    return [];
+  }
+  const branches: LocalBranch[] = [];
+  for (const line of result.stdout.split('\n')) {
+    if (line.trim().length === 0) {
+      continue;
+    }
+    const [name, worktreePath, head] = line.split('\t');
+    if (name === undefined || name.length === 0) {
+      continue;
+    }
+    const checkedOutIn =
+      worktreePath !== undefined && path.isAbsolute(worktreePath.trim())
+        ? worktreePath.trim()
+        : undefined;
+    branches.push({ name, checkedOutIn, current: head === '*' });
+  }
+  return branches;
 }

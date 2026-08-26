@@ -7,7 +7,7 @@
  * re-exports these for its callers.
  */
 
-import { existsSync, readFileSync, statSync } from 'fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
 import * as path from 'path';
 
 import { safely } from '../util/log';
@@ -56,5 +56,47 @@ export function mainRepoFor(worktreeDir: string): string | undefined {
       return index > 0 ? gitdir.slice(0, index) : undefined;
     },
     undefined,
+  );
+}
+
+/**
+ * Every linked worktree of a main repo, read from git's own registry at
+ * `<repo>/.git/worktrees/<name>/gitdir` — the file holds the path of the
+ * worktree's `.git` file, so its dirname is the worktree directory.
+ *
+ * Registry-side, not `git worktree list`: this runs on every poll, so it may
+ * not shell out. A worktree whose directory is gone (moved or deleted but not
+ * yet pruned) is skipped — the tree must never offer a row for a path that
+ * cannot be opened. Returns nothing for a linked worktree or a non-repo, both
+ * of which have no `worktrees/` of their own.
+ */
+export function worktreesOf(repoDir: string): string[] {
+  return safely<string[]>(
+    `worktreesOf(${repoDir})`,
+    () => {
+      const base = path.join(repoDir, '.git', 'worktrees');
+      if (!safely(`statSync(${base})`, () => statSync(base).isDirectory(), false)) {
+        return [];
+      }
+      const dirs: string[] = [];
+      for (const entry of readdirSync(base, { withFileTypes: true })) {
+        if (!entry.isDirectory()) {
+          continue;
+        }
+        const dir = safely<string | undefined>(
+          `worktreeGitdir(${entry.name})`,
+          () => {
+            const gitdir = readFileSync(path.join(base, entry.name, 'gitdir'), 'utf8').trim();
+            return gitdir.length > 0 ? path.dirname(gitdir) : undefined;
+          },
+          undefined,
+        );
+        if (dir !== undefined && existsSync(dir)) {
+          dirs.push(dir);
+        }
+      }
+      return dirs;
+    },
+    [],
   );
 }

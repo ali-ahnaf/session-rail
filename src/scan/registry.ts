@@ -43,7 +43,7 @@ import { isAlive, readSessionRecords } from './sessions';
 import { Tailer } from './tailer';
 import { readTasks } from './tasks';
 import { forgetTitles, readAiTitle, sanitizeTitle } from './titles';
-import { isWorktreeDir, mainRepoFor } from './worktree';
+import { isWorktreeDir, mainRepoFor, worktreesOf } from './worktree';
 
 export interface RailRegistry extends vscode.Disposable {
   readonly onDidChange: vscode.Event<Snapshot>;
@@ -61,6 +61,26 @@ export function createRegistry(): RailRegistry {
 const DEFAULT_INTERVAL_MS = 2000;
 const MIN_INTERVAL_MS = 500;
 const MAX_INTERVAL_MS = 30_000;
+
+/**
+ * Floor on the poll interval while this window is unfocused.
+ *
+ * Every VS Code window runs its own registry over the same machine-wide
+ * `~/.claude`, so N windows do N times the identical scanning — the one cost in
+ * this extension that grows with how the user works rather than with how much
+ * Claude Code is running. An unfocused window is one nobody is reading, so it
+ * polls at this floor instead (a configured interval already longer than it
+ * wins, hence a floor and not a fixed value).
+ *
+ * Deliberately below `SESSION_STICKY_MS`: the sticky `generating` hold is
+ * anchored on a tick, so an idle cadence at or above 20 s would stop the hold
+ * contributing anything and reintroduce the mid-turn spinner blink. Raising
+ * this past that means re-reading `deriveSessionState`.
+ *
+ * Nothing is observably stale, because regaining focus refreshes immediately
+ * rather than waiting out the pending timer.
+ */
+const IDLE_INTERVAL_MS = 15_000;
 
 /** Bytes of transcript tail read on a cold start, per file. */
 const COLD_START_BYTES = 512 * 1024;
@@ -143,6 +163,16 @@ class Registry implements RailRegistry {
   private inflight: Promise<void> | undefined;
   private started = false;
   private disposed = false;
+  /** Whether this window has focus; drives the poll cadence, nothing else. */
+  private focused: boolean;
+  private readonly focusSub: vscode.Disposable;
+
+  constructor() {
+    this.focused = vscode.window.state.focused;
+    this.focusSub = vscode.window.onDidChangeWindowState((state) => {
+      this.onFocusChange(state.focused);
+    });
+  }
 
   snapshot(): Snapshot {
     return this.current;
@@ -184,10 +214,8 @@ class Registry implements RailRegistry {
 
   dispose(): void {
     this.disposed = true;
-    if (this.timer) {
-      clearTimeout(this.timer);
-      this.timer = undefined;
-    }
+    this.clearTimer();
+    this.focusSub.dispose();
     this.tailer.dispose();
     this.scans.clear();
     this.activity.clear();
@@ -201,9 +229,39 @@ class Registry implements RailRegistry {
     if (this.disposed) {
       return;
     }
+    const configured = readConfig().refreshInterval;
+    const delay = this.focused ? configured : Math.max(configured, IDLE_INTERVAL_MS);
     this.timer = setTimeout(() => {
       void this.tick();
-    }, readConfig().refreshInterval);
+    }, delay);
+  }
+
+  private clearTimer(): void {
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = undefined;
+    }
+  }
+
+  /**
+   * Re-cadence on focus. Gaining focus catches up *now* rather than serving the
+   * idle snapshot until the pending long timer fires — so the slower cadence is
+   * only ever observable in a window the user is not looking at.
+   */
+  private onFocusChange(focused: boolean): void {
+    if (this.disposed || focused === this.focused) {
+      return;
+    }
+    this.focused = focused;
+    if (!this.started) {
+      return;
+    }
+    this.clearTimer();
+    if (focused) {
+      void this.tick();
+    } else {
+      this.scheduleNext();
+    }
   }
 
   private async tick(): Promise<void> {
@@ -559,6 +617,8 @@ class Registry implements RailRegistry {
       project.sessions.push(session);
     }
 
+    this.addIdleWorktrees(byDir);
+
     const projects = [...byDir.values()];
     for (const project of projects) {
       project.sessions.sort(compareSessions);
@@ -566,6 +626,42 @@ class Registry implements RailRegistry {
     }
     projects.sort((left, right) => left.name.localeCompare(right.name) || left.dir.localeCompare(right.dir));
     return projects;
+  }
+
+  /**
+   * Give every worktree of a visible repo a row, even with nothing running in
+   * it. Sessions are the only thing that mints a project row, so without this
+   * a worktree's row — and with it the origin repo's whole worktree section —
+   * vanishes the moment the last session inside it exits, which reads as the
+   * worktree having been removed. The rows are empty (`sessions: []`,
+   * `liveCount: 0`) and carry the same `worktree`/`parentDir` marking a
+   * session-derived worktree row has, so the provider nests them unchanged.
+   *
+   * Read fresh every poll rather than memoized: a removed worktree has to stop
+   * being offered, and the cost is one readdir plus a stat per worktree of each
+   * repo with a session in it.
+   */
+  private addIdleWorktrees(byDir: Map<string, ProjectNode>): void {
+    for (const project of [...byDir.values()]) {
+      if (project.worktree === true) {
+        continue;
+      }
+      for (const dir of worktreesOf(project.dir)) {
+        if (byDir.has(dir)) {
+          continue;
+        }
+        byDir.set(dir, {
+          kind: 'project',
+          id: dir,
+          name: path.basename(dir) || dir,
+          dir,
+          sessions: [],
+          liveCount: 0,
+          worktree: true,
+          parentDir: project.dir,
+        });
+      }
+    }
   }
 
   private projectDirFor(session: SessionNode, config: RailConfig): string {

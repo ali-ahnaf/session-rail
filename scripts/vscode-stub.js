@@ -94,6 +94,16 @@ class MarkdownString {
 const progressCalls = [];
 
 const window = {
+  /**
+   * The registry reads focus to pick its poll cadence and subscribes for
+   * changes. A check runs headless, so the window is always focused (the fast
+   * cadence — the one worth exercising) and the event never fires.
+   */
+  state: { focused: true },
+  onDidChangeWindowState() {
+    return { dispose() {} };
+  },
+
   withProgress(options, task) {
     const call = { viewId: options && options.location && options.location.viewId, settled: false };
     progressCalls.push(call);

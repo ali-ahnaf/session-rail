@@ -11,7 +11,7 @@
     "agents",
     "subagents"
   ],
-  "version": "0.2.2",
+  "version": "0.2.3",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -235,19 +235,24 @@
           "group": "inline@2"
         },
         {
+          "command": "sessionRail.newWorktreeSession",
+          "when": "view == sessionRail.tree && viewItem =~ /^project(\\.pinned)?$/",
+          "group": "inline@2"
+        },
+        {
           "command": "sessionRail.pinProject",
           "when": "view == sessionRail.tree && (viewItem == project || viewItem == project.worktree)",
-          "group": "inline@2"
+          "group": "inline@3"
         },
         {
           "command": "sessionRail.unpinProject",
           "when": "view == sessionRail.tree && (viewItem == project.pinned || viewItem == project.worktree.pinned)",
-          "group": "inline@2"
+          "group": "inline@3"
         },
         {
           "command": "sessionRail.showInExplorer",
           "when": "view == sessionRail.tree && (viewItem =~ /^project/ || viewItem == session.live || viewItem == session.exited)",
-          "group": "inline@3"
+          "group": "inline@4"
         },
         {
           "command": "sessionRail.newSession",

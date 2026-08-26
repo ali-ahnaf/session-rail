@@ -113,7 +113,20 @@ stays runnable outside the extension host.
   user arranged by hand, so a directory already reachable from a root is only
   revealed. The worktree pair (`newWorktreeSession`/`removeWorktree`,
   `src/workspace/worktree.ts`) writes into the user's own filesystem via `git`:
-  create adds `<parent>/<repo>-worktrees/<name>` (name validated by
+  create adds `<globalStorage>/worktrees/<repo>/<branch>` — outside
+  every repo, so not even an ignored directory appears in the user's checkout,
+  and under a `<repo>` level because the base is shared machine-wide and two
+  repos with a `main` branch would otherwise collide on one path. The base is
+  `context.globalStorageUri.fsPath`, passed down from `extension.ts` as an
+  argument so `workspace/worktree.ts` never imports `vscode`; the
+  obvious-looking `~/.vscode/extensions/session-rail/` is deliberately **not**
+  used, because that is VS Code's own install directory and it prunes there,
+  whereas globalStorage survives extension updates and is pruned by nothing.
+  The branch
+  keeps its slashes and the folder does not (`worktreeFolderName` flattens
+  `/`→`-`, or `feat/auth` would mint an intermediate `feat` directory and label
+  the row `auth`); every worktree path goes through it and no git branch
+  argument does (name validated by
   `validateWorktreeName` before it becomes a path and a branch; always
   `execFile` with an args array, never a shell string), and remove — the one
   action that deletes a directory — sits behind a modal confirm, refuses while
@@ -207,6 +220,28 @@ stays runnable outside the extension host.
   hold assumes polls are frequent relative to itself. At the top of
   `refreshInterval`'s allowed range (30 s) two consecutive polls can be further
   apart than `SESSION_STICKY_MS`, and the hold stops contributing anything.
+  That is also the constraint that fixes `IDLE_INTERVAL_MS` at 15 s rather than
+  something larger — see the poll-cadence invariant below.
+- **Poll cadence tracks window focus, and nothing else does.** Every VS Code
+  window runs its own registry over the same machine-wide `~/.claude`, so N
+  windows do N times the identical scanning — the only cost here that grows with
+  how the user arranges their editor rather than with how much Claude Code is
+  running. An unfocused window therefore polls at a floor of
+  `IDLE_INTERVAL_MS` (15 s) instead of `refreshInterval`; a configured interval
+  already longer than that still wins, which is why it is a floor and not a
+  fixed value. Two things keep this from being observable. Regaining focus calls
+  `tick()` immediately rather than waiting out the pending long timer, so the
+  slow cadence only ever applies to a window nobody is reading — the status bar
+  included, which is why the gate is focus and **not** `TreeView.visible`: the
+  status bar is visible whether or not the rail is, and a focused window with
+  the sidebar closed must stay current. And 15 s sits deliberately below
+  `SESSION_STICKY_MS` (20 s), because the sticky hold is anchored on a tick —
+  an idle cadence at or above the hold would stop it contributing and bring back
+  the mid-turn spinner blink. Raising `IDLE_INTERVAL_MS` past 20 s means
+  re-reading `deriveSessionState` first. Focus is read once in the registry's
+  constructor and kept current by its own `onDidChangeWindowState`
+  subscription — it is the poll loop's business, so no caller has to remember to
+  wire it.
 - **Motion is opt-out, and only motion is.** Every animated icon
   (`loading~spin` on session, subagent, and project rows) plus the view header
   progress bar is suppressed when `workbench.reduceMotion` is `'on'`; `'auto'`
@@ -224,10 +259,13 @@ stays runnable outside the extension host.
   change. So a search that hides the only working session leaves the bar
   spinning over a tree with no spinner in it. Correct, and surprising enough to
   be worth reading twice before "fixing" either side.
-- **A project row's icon does not always encode pin state.** While any child
-  session is generating (and motion is allowed) the spinner takes the icon slot
-  from `$(folder)`/`$(pinned)`. Pin state stays readable from the `Pinned`
-  section the row sits under, from the Pin/Unpin context menu, and from
+- **A project row's icon does not always encode pin state.** One slot, three
+  claims on it, in order: `loading~spin` while any child session is generating
+  (and motion is allowed), then `$(git-branch)` on a worktree, then
+  `$(pinned)`, then `$(folder)`. A worktree outranks a pin because a worktree
+  row nested under an ordinary-looking repo row has nowhere else to say what it
+  is but its description text, whereas pin state has three other homes: the
+  `Pinned` section the row sits under, the Pin/Unpin context menu, and
   `contextValue` — which is untouched, so every menu `when` clause keeps working.
 - **Session liveness needs two signals.** `sessions/*.json` outlives the process,
   so `process.kill(pid, 0)` alone is not enough — `procStart` is compared against
@@ -266,6 +304,20 @@ stays runnable outside the extension host.
 - **Escape everything in the webview.** Transcripts contain arbitrary model and
   tool output. `transcript/panel.ts` routes every interpolated value through one
   `escapeHtml` helper, under a strict CSP with a per-render nonce. No exceptions.
+  A trap worth knowing before editing that file: the whole page is one
+  TypeScript template literal, so a stray backtick anywhere inside it — a
+  Markdown-style quote in a comment in the inlined `<script>`, say — terminates
+  the string and breaks the build in a place the error does not point at.
+- **The transcript panel is not retained while hidden.**
+  `retainContextWhenHidden` keeps a webview's entire DOM alive for the life of
+  the tab, and this one holds up to `MAX_TAIL_BYTES` (512 KB) of rendered
+  transcript per open panel per window — the largest retained allocation the
+  extension is capable of. It is deliberately left off: VS Code re-applies
+  `webview.html` when the tab is revealed, so the content returns by itself, and
+  the only DOM state worth carrying across a hide is the scroll offset, which
+  the page checkpoints through `setState`/`getState`. The consequence to keep in
+  mind is that the inlined script re-runs on every reveal, so anything it should
+  remember has to live in webview state rather than in a variable.
 
 ## Drift — this reads private, unversioned state
 
@@ -360,8 +412,9 @@ check into a passing no-op.
   `toggleTasks`, `showExited`, `hideExited`, `pinProject`, `unpinProject`,
   `searchSessions`, `clearSearch`, `showLog`.
 - `showInExplorer` is the `$(folder-opened)` inline icon at the right end of
-  every project and session row (`inline@3`, after `newSession`/`focusTerminal`
-  at `@1` and `openTranscript` at `@2`). It is **not** `revealFolder`, which is
+  every project and session row (`inline@4`, after `newSession`/`focusTerminal`
+  at `@1`, `newWorktreeSession`/`openTranscript` at `@2`, and `pinProject` at
+  `@3`). It is **not** `revealFolder`, which is
   `revealFileInOS` — Finder, a different action, and still menu-only with no
   icon. The Explorer can only render workspace roots and their contents, so
   showing an arbitrary directory means appending a root; `vscode.openFolder` is
@@ -387,14 +440,14 @@ check into a passing no-op.
   silently disappears the moment the folder is pinned or is a worktree. The
   pin pair is the exception (exact-match lists, one per flag combination), and
   `newWorktreeSession` deliberately excludes worktree rows
-  (`/^project(\.pinned)?$/`) — a worktree of a worktree lands in a nested
-  `-worktrees` folder nobody expects. The search row and the
+  (`/^project(\.pinned)?$/`) — a worktree of a worktree resolves its `<repo>`
+  level from the worktree's own basename, scattering branches of one repo under
+  two different folders. The search row and the
   `Pinned` section row set **none** — they own no menus.
 - **Pinning is `globalState`, not a setting and not a snapshot field.**
   `pinProject`/`unpinProject` are the `$(pin)`/`$(pinned)` inline icon at
-  `inline@2` on every project row (the slot `openTranscript` uses on session
-  rows) plus a `navigation@5` context-menu entry; exactly one of the pair is ever
-  visible, gated on `viewItem == project` vs. `viewItem == project.pinned` —
+  `inline@3` on every project row plus a `navigation@5` context-menu entry;
+  exactly one of the pair is ever visible, gated on `viewItem == project` vs. `viewItem == project.pinned` —
   the same show-the-state split as `showExited`/`hideExited`, but keyed on the
   row rather than a context key. Both are node-driven, so both are hidden from
   the command palette. Neither refreshes the registry: `PinStore` fires its own
@@ -454,12 +507,13 @@ check into a passing no-op.
 - `newSessionHome` is the same `+` in the view title bar, for work that belongs
   to no project row yet. Taking no node, it asks the two questions the row `+`
   already knows: **what** and **where**.
-  What is a four-way `showQuickPick` — Claude Session (`startSession`, exactly
-  what the button always did), Scratchpad (`createScratchpad`), Worktree
-  Session (`newWorktreeSession` — worktree of the repo containing the target,
-  then `startSession` in it), Terminal (`startTerminal`, a plain shell with
-  nothing sent). Session stays first so the
-  original behavior is still the default landing item. The item type is
+  What is a three-way `showQuickPick` — Claude Session (`startSession`, exactly
+  what the button always did), Scratchpad (`createScratchpad`), Terminal
+  (`startTerminal`, a plain shell with nothing sent). Session stays first so the
+  original behavior is still the default landing item. Worktrees are
+  deliberately **not** an option here: a worktree is always *of* a repo, and the
+  header `+` acts on the window's folder, which need not be one — it belongs on
+  the project row, where the row **is** the repo. The item type is
   `QuickPickItem & { action }` — **never `kind`**, which is VS Code's own
   separator enum and intersects to `never`.
   Where is `resolveHeaderTarget`, shared by all three branches so a scratchpad
@@ -474,15 +528,20 @@ check into a passing no-op.
   It takes no node, so unlike the other node-driven commands it stays visible in
   the command palette (the title is "New Session, Scratchpad, or Terminal"; the
   id keeps the `Home` spelling so existing keybindings survive).
-- `newWorktreeSession` lives in the project-row context menu (`navigation@2`,
-  no inline icon — the three inline slots are taken) and in the header pick. It
-  prompts for a name (`validateWorktreeName`, live "already exists" check),
+- `newWorktreeSession` is the `$(git-branch)` inline icon at `inline@2` on
+  every non-worktree project row, plus the same row's context menu at
+  `navigation@2`. It is **not** in the header pick. It
+  prompts for a branch name (`validateWorktreeName`, live "already exists"
+  check against `join(parent, worktreeFolderName(name))` — the path that will
+  actually be created, not the branch),
   runs `git worktree add <target> -b <name>` from the containing repo root —
   falling back to a plain checkout when the branch already exists — then
   `startSession` in the new directory. The row appears on a later poll like any
   new session; `ProjectNode.worktree` (set by the registry, the layer allowed
-  to stat) marks it with a `worktree` description segment and the
-  `project.worktree*` contextValues. `removeWorktree` is context-menu only, in
+  to stat) marks it with a `worktree` description segment, the `$(git-branch)`
+  icon, and the `project.worktree*` contextValues. git creates the leading
+  directories, so the shared base and the `<repo>` level appear on first use
+  with no mkdir of our own. `removeWorktree` is context-menu only, in
   `9_danger` on `/^project\.worktree/` rows.
 - **Worktree rows nest under the project they were created from — but only in
   the view.** `ProjectNode.parentDir` is the main repo, parsed by the registry
@@ -502,6 +561,25 @@ check into a passing no-op.
   its expansion (`nestedWorktrees`/`nestedLive` in `RenderOptions`) — its own
   spinner and `N working` stay own-sessions-only, the header bar covers the
   rest.
+- **A worktree row outlives its sessions.** Sessions are the only thing that
+  mints a `ProjectNode`, so the last session in a worktree exiting used to take
+  the row — and with it the origin's whole worktree section — away, which reads
+  as the worktree having been removed. `registry.addIdleWorktrees` therefore
+  lists every worktree of each visible repo from git's own registry
+  (`worktreesOf` in `scan/worktree.ts`: `<repo>/.git/worktrees/<name>/gitdir`,
+  whose dirname is the worktree directory) and synthesizes an empty row —
+  `sessions: []`, `liveCount: 0`, same `worktree`/`parentDir` marking — for any
+  it has no project for. Three properties to keep: it is read **fresh every
+  poll**, not memoized like `gitRoots`/`worktreeMeta`, because a removed
+  worktree has to stop being offered; a worktree whose directory is gone but
+  unpruned is skipped, so no row points at a path that cannot be opened; and
+  worktree rows are only enumerated for non-worktree parents, so a worktree of
+  a worktree cannot recurse. The description reads `no sessions · worktree` —
+  the `no sessions` branch in `items.ts` is no longer pinned-only. Under a
+  search these rows drop out like a pinned placeholder does: a row with no
+  sessions cannot match. Only repos with a session of their own are scanned —
+  the registry does not know about pins — so a pinned repo placeholder with an
+  idle worktree still shows neither.
 - `focusTerminal` is the click action on every session row, live or exited, and
   never dead-ends: it focuses the hosting terminal if this window has one, else
   reuses the terminal it opened earlier for that session, else opens a new one
