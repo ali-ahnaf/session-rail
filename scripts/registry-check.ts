@@ -193,9 +193,11 @@ async function main(): Promise<void> {
       working.every(
         (p) =>
           iconOf(p) === 'loading~spin sessionRail.working' &&
-          String(toTreeItem(p).description ?? '').endsWith(
-            `${p.sessions.filter((s) => s.state === 'generating').length} working`,
-          ),
+          // A segment, not a suffix: `N worktrees` and `worktree` both render
+          // after `N working`, so an endsWith here fails on a worktree row.
+          String(toTreeItem(p).description ?? '')
+            .split(' \u00b7 ')
+            .includes(`${p.sessions.filter((s) => s.state === 'generating').length} working`),
       ),
       working.map((p) => `${p.name}: ${String(toTreeItem(p).description ?? '')}`).join(', '),
     );

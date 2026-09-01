@@ -541,8 +541,18 @@ check into a passing no-op.
   to stat) marks it with a `worktree` description segment, the `$(git-branch)`
   icon, and the `project.worktree*` contextValues. git creates the leading
   directories, so the shared base and the `<repo>` level appear on first use
-  with no mkdir of our own. `removeWorktree` is context-menu only, in
-  `9_danger` on `/^project\.worktree/` rows.
+  with no mkdir of our own. It then appends the worktree as a workspace root
+  (`addWorktreeFolder` → the same `showInExplorer` the folder icon uses, so
+  add-only and append-past-index-0 hold here too) — the worktree lives outside
+  every repo, so without this its files are unreachable in the window the
+  session runs in. **Session first, folder second**: a single-folder window
+  going multi-root restarts the extension hosts, so nothing after the add is
+  guaranteed to run, while the terminal is already in the pty host and
+  survives. The add is best-effort and only logs on refusal or cancel — an
+  error popup over a working session reads as the worktree having failed.
+  `removeWorktree` is context-menu only, in
+  `9_danger` on `/^project\.worktree/` rows; it does **not** remove the
+  workspace root it added, per the add-only rule.
 - **Worktree rows nest under the project they were created from — but only in
   the view.** `ProjectNode.parentDir` is the main repo, parsed by the registry
   from the worktree's `.git` file (`scan/worktree.ts`, the read side; the

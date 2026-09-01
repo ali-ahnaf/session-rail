@@ -517,11 +517,23 @@ async function newWorktreeSession(dir: string, base: string): Promise<void> {
   const result = await createWorktree(root, name, base);
   switch (result.outcome) {
     case 'created':
-      if (result.dir !== undefined && startSession(result.dir, name) === 'missing-dir') {
+      if (result.dir === undefined) {
+        return;
+      }
+      if (startSession(result.dir, name) === 'missing-dir') {
         void vscode.window.showWarningMessage(
           `Created the worktree but ${result.dir} is not readable. See the Session Rail log.`,
         );
+        return;
       }
+      // The session is started FIRST and the folder added second, deliberately.
+      // A single-folder window becoming multi-root restarts every extension
+      // host (see workspace/explorer.ts), so nothing after the add is
+      // guaranteed to run — whereas the terminal is already live in the pty
+      // host by then and survives the restart. Adding is best-effort: a
+      // refused or cancelled add still leaves a working session, so it only
+      // logs.
+      await addWorktreeFolder(result.dir);
       return;
     case 'exists':
       void vscode.window.showWarningMessage(`${result.dir ?? name} already exists.`);
@@ -541,6 +553,28 @@ async function newWorktreeSession(dir: string, base: string): Promise<void> {
           'See the Session Rail log.',
       );
       return;
+  }
+}
+
+/**
+ * Put a freshly created worktree on screen: append it as a workspace root so
+ * its files are editable in the same window the session runs in.
+ *
+ * Reuses `showInExplorer` rather than calling `updateWorkspaceFolders` here,
+ * so the worktree lands under exactly the rules that command already
+ * establishes — add-only, appended past index 0, revealed when the directory
+ * is already reachable from a root (a worktree of a repo that is itself a
+ * root is not, so this is normally a real add).
+ *
+ * Everything here is best-effort. The worktree exists and the session is
+ * already running by the time this is called, so a refused or cancelled add is
+ * logged rather than raised: an error popup over a working session would read
+ * as the worktree having failed.
+ */
+async function addWorktreeFolder(dir: string): Promise<void> {
+  const outcome = await showInExplorer(dir);
+  if (outcome !== 'revealed' && outcome !== 'added') {
+    log.warn(`Did not add the worktree ${dir} to this workspace: ${outcome}`);
   }
 }
 
