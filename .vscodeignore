@@ -14,6 +14,7 @@ scripts/**
 .regcheck.js
 .pinscheck.js
 .stickycheck.js
+.worktreecheck.js
 package-lock.json
 media/demo.mp4
 .claude/**

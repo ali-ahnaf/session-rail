@@ -80,6 +80,7 @@ transcript/    read-only webview transcript reader
 workspace/
   explorer     show a directory in the Explorer (add root / reveal)
   scratchpad   create a throwaway .md next to the work and open it
+  tabs         the open-tab picker: window tabs + terminals, grouped by kind
   worktree     git worktree create/remove — the one module that shells out to git
 extension.ts   activation + command wiring only — a switchboard, no logic
 ```
@@ -139,6 +140,27 @@ stays runnable outside the extension host.
   `src/workspace/explorer.ts` for the branch behavior the VS Code source actually
   has — worth reading before touching it, because three of its four cases are
   counter-intuitive.
+- **A fresh worktree is seeded with the repo's ignored files, and the copy never
+  overwrites.** `git worktree add` checks out tracked content only, so `.env`,
+  `node_modules/`, and local config are missing — a session started there fails
+  its first command for a reason unrelated to the work. `copyIgnoredFiles`
+  (`src/workspace/worktree.ts`) closes that gap under
+  `sessionRail.copyIgnoredToWorktree` (default on). Rules it holds:
+  the list comes from `git ls-files --others --ignored --exclude-standard
+  --directory --no-empty-directory -z` and never from a hand-rolled
+  `.gitignore` parser — git's own matcher, nested ignore files and all;
+  `--directory` collapses `node_modules/` to one entry so the copy is one `cp`
+  and not a walk of 30 000 paths; `-z` disables git's path quoting, so the
+  bytes between NULs are the real name and nothing is unescaped here; the copy
+  is `force: false`, because a path ignored in the source can be **tracked** on
+  the branch checked out in the worktree and clobbering it would silently
+  corrupt the new tree; `dereference: false`, so a self-referential symlink
+  cannot become an infinite walk; and every entry is independent, so one
+  failure is counted and logged rather than aborting the rest. Ordering:
+  seed **before** `startSession`, add the workspace folder after both — the
+  agent must not start in a worktree that is still being filled, and the
+  folder add can still restart the extension host. Like the folder add, the
+  whole pass is best-effort: a failed copy warns and leaves a usable worktree.
 - **Pins are the only state this extension owns.** `src/tree/pins.ts` keeps them
   in `context.globalState` — not a setting, because the values are absolute
   machine paths managed entirely by clicking, and Settings Sync would carry them
@@ -356,6 +378,7 @@ npm run lint             # eslint src
 npm run smoke            # scan layer vs. real ~/.claude, known historical sessions
 npm run check:pins       # pinned-folders view logic (deterministic, no disk)
 npm run check:sticky     # sticky generating hold + icon mapping (deterministic, injected clock)
+npm run check:worktree   # ignored-file seeding of a fresh worktree (real git, temp repo)
 npm run check:registry   # registry end-to-end, prints the tree as the sidebar renders it
 npm run verify           # all of the above + build. Run this before declaring done.
 ```
@@ -387,6 +410,14 @@ agrees with assumptions that were already wrong once.
   progress bar's raise/off-delay/dispose sequence at all, since neither is
   something a check can arrange on a live machine.
 
+- `scripts/worktree-check.ts` — deterministic, and not a third exception to the
+  no-fixtures rule: nothing in it stands in for `~/.claude`. It builds a
+  throwaway repo in a temp dir and runs **real git**, so what it pins is
+  `copyIgnoredFiles` agreeing with git's own ignore matcher — the thing it
+  delegates to — rather than with a hand-written list of ignored paths. The
+  cases that matter are the destructive ones: a file already in the worktree is
+  not overwritten, `.git` is not clobbered, and a symlink stays a symlink.
+
 **`scripts/` is typechecked, and it has to be.** esbuild bundles the checks by
 stripping types without checking them, so a check can build a node with a
 required field missing and still print a row of passes — which happened once
@@ -410,7 +441,7 @@ check into a passing no-op.
   `newSessionHome`, `newWorktreeSession`, `removeWorktree`, `openTranscript`,
   `showInExplorer`, `revealFolder`, `copySessionId`, `stopSession`,
   `toggleTasks`, `showExited`, `hideExited`, `pinProject`, `unpinProject`,
-  `searchSessions`, `clearSearch`, `showLog`.
+  `searchSessions`, `searchTabs`, `clearSearch`, `showLog`.
 - `showInExplorer` is the `$(folder-opened)` inline icon at the right end of
   every project and session row (`inline@4`, after `newSession`/`focusTerminal`
   at `@1`, `newWorktreeSession`/`openTranscript` at `@2`, and `pinProject` at
@@ -491,10 +522,31 @@ check into a passing no-op.
   context key, which `setFilter` maintains.
   Known limit: because `TreeItem.id` is stable by design, a project the user
   collapsed by hand stays collapsed under a search.
+- **`searchTabs` searches the window's tabs, not the rail.** It is the
+  `$(multiple-windows)` view-title button at `navigation@2` (search row `@1`,
+  then `+` `@3`, refresh `@4`, the exited toggle `@5`) and a QuickPick over
+  `vscode.window.tabGroups`, grouped by what each tab is: Claude Sessions,
+  Files, Diffs, Notebooks, Terminals, Views, Other. It takes no node, so it
+  stays in the command palette. Three things the tab API forces
+  (`src/workspace/tabs.ts`): `TabInputTerminal` carries **no `Terminal`
+  handle**, so a terminal tab is matched to a live terminal by name with each
+  terminal claimed at most once, and focusing goes through `terminal.show()`
+  rather than the tab — the only way to raise a terminal at all; panel
+  terminals are **not tabs**, so every terminal left unclaimed is listed too,
+  marked `panel`; and a webview tab has no uri and no focus API, so those rows
+  say so instead of pretending. A row is a Claude session when the registry's
+  pid resolves to that terminal through `findTerminalForPid` — the same
+  ancestry walk `focusTerminal` uses, concurrent and pid-cached, with the pick
+  `busy` while it runs. The `$(close)` item button closes a tab and recollects
+  the list so a cleanup pass is one pass; it is deliberately **absent on Claude
+  rows**, because closing that terminal kills a running agent, which is what
+  `stopSession`'s modal confirm exists for. Everything else it can close is
+  something VS Code already prompts about when dirty.
 - Config: `sessionRail.` + `refreshInterval` (2000, clamped 500–30000),
   `showTasks` (true), `showExited` (false), `historyDays` (7, clamped 0–90),
   `groupBy` (`cwd`|`gitRoot`), `terminalLocation` (`editor`|`panel`),
-  `openLiveSession` (`ask`|`adopt`|`fork`), `claudeHome` (`""`, testing override).
+  `openLiveSession` (`ask`|`adopt`|`fork`), `copyIgnoredToWorktree` (true),
+  `claudeHome` (`""`, testing override).
 - `newSession` is the inline `+` on every project row: it opens a shell terminal
   rooted at the project's `dir` and sends `claude`. The new session appears in
   the tree on a later poll, once it registers itself under `~/.claude`. It must
@@ -535,8 +587,10 @@ check into a passing no-op.
   check against `join(parent, worktreeFolderName(name))` — the path that will
   actually be created, not the branch),
   runs `git worktree add <target> -b <name>` from the containing repo root —
-  falling back to a plain checkout when the branch already exists — then
-  `startSession` in the new directory. The row appears on a later poll like any
+  falling back to a plain checkout when the branch already exists — then seeds
+  the worktree with the repo's ignored files (see the seeding invariant; the
+  copy shows a notification because `node_modules/` is one long entry and a
+  silent pause reads as a hang) and then `startSession` in the new directory. The row appears on a later poll like any
   new session; `ProjectNode.worktree` (set by the registry, the layer allowed
   to stat) marks it with a `worktree` description segment, the `$(git-branch)`
   icon, and the `project.worktree*` contextValues. git creates the leading

@@ -27,6 +27,7 @@
 
 import { execFile } from 'child_process';
 import { existsSync } from 'fs';
+import * as fsp from 'fs/promises';
 import * as path from 'path';
 
 import { gitRootOf, isWorktreeDir, mainRepoFor } from '../scan/worktree';
@@ -289,4 +290,112 @@ export async function listLocalBranches(repoRoot: string): Promise<LocalBranch[]
     branches.push({ name, checkedOutIn, current: head === '*' });
   }
   return branches;
+}
+
+/** Outcome of seeding a fresh worktree with the ignored files of its repo. */
+export interface CopyIgnoredResult {
+  outcome: 'copied' | 'nothing' | 'failed';
+  /** Top-level ignored entries copied (a collapsed directory counts as one). */
+  copied: number;
+  /** Entries that could not be copied; each one is logged. */
+  failed: number;
+  /** The decisive git stderr line, on 'failed'. */
+  detail?: string;
+}
+
+/**
+ * Copy the ignored-but-present files of `from` into `to` — the `.env`,
+ * `node_modules/`, and local config a fresh worktree is missing.
+ *
+ * A worktree is a checkout of tracked content only, so a session started in
+ * one cannot build or run until whatever `.gitignore` hides has been put
+ * there by hand. That is the whole point of this pass, and it is why the
+ * default is on: the alternative is a worktree that looks right and fails at
+ * the first command.
+ *
+ * The list comes from git, never from a hand-rolled `.gitignore` parser:
+ * `ls-files --others --ignored --exclude-standard` is the same matcher git
+ * itself uses, nested `.gitignore` files and all. `--directory` collapses a
+ * wholly-ignored directory to one entry, so `node_modules/` is one `cp` and
+ * not a walk of 30 000 paths, and `--no-empty-directory` drops the entries
+ * that would only mint empty folders. `-z` disables git's own path quoting,
+ * so the bytes between NULs are the real name — no unescaping here.
+ *
+ * Two rules the copy holds. Nothing already in the worktree is overwritten
+ * (`force: false`): an ignored path in the source can be a *tracked* file on
+ * the branch checked out here, and clobbering that would silently corrupt the
+ * new worktree. And symlinks are copied as symlinks (`dereference: false`),
+ * which keeps a self-referential link from turning into an infinite walk.
+ *
+ * Every entry is independent, so one failure is counted and logged rather
+ * than aborting the rest — a half-seeded worktree still beats an empty one,
+ * and the session that follows is not blocked on this.
+ */
+export async function copyIgnoredFiles(
+  from: string,
+  to: string,
+  onEntry?: (entry: string) => void,
+): Promise<CopyIgnoredResult> {
+  const listed = await runGit(
+    [
+      'ls-files',
+      '--others',
+      '--ignored',
+      '--exclude-standard',
+      '--directory',
+      '--no-empty-directory',
+      '-z',
+    ],
+    from,
+  );
+  if (!listed.ok) {
+    return { outcome: 'failed', copied: 0, failed: 0, detail: firstLine(listed.stderr) };
+  }
+
+  const entries = listed.stdout.split('\0').filter((entry) => isCopyableEntry(entry));
+  if (entries.length === 0) {
+    return { outcome: 'nothing', copied: 0, failed: 0 };
+  }
+
+  let copied = 0;
+  let failed = 0;
+  for (const entry of entries) {
+    // Trailing slash marks a collapsed directory; strip it so join/dirname
+    // behave and `cp` gets the directory itself rather than a child of it.
+    const relative = entry.endsWith('/') ? entry.slice(0, -1) : entry;
+    onEntry?.(relative);
+    const source = path.join(from, relative);
+    const destination = path.join(to, relative);
+    try {
+      await fsp.mkdir(path.dirname(destination), { recursive: true });
+      await fsp.cp(source, destination, {
+        recursive: true,
+        force: false,
+        errorOnExist: false,
+        dereference: false,
+      });
+      copied += 1;
+    } catch (error) {
+      failed += 1;
+      log.warn(`Could not copy ignored ${relative} into ${to}: ${String(error)}`);
+    }
+  }
+
+  log.info(`Copied ${copied} ignored entries into ${to}${failed > 0 ? ` (${failed} failed)` : ''}`);
+  return { outcome: 'copied', copied, failed };
+}
+
+/**
+ * Guard on a path that came from outside: git prints repo-relative paths, so
+ * anything absolute or climbing out with `..` is not something to write
+ * through. `.git` is never listed by `ls-files`, but copying one over a
+ * worktree's `.git` file would break the worktree, so it is refused by name
+ * rather than by trust.
+ */
+function isCopyableEntry(entry: string): boolean {
+  if (entry.length === 0 || path.isAbsolute(entry)) {
+    return false;
+  }
+  const segments = entry.split('/');
+  return !segments.some((segment) => segment === '..' || segment === '.git');
 }

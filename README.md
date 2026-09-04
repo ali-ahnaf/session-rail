@@ -128,10 +128,10 @@ disk, so no row is currently colored with it.
 - **Stop Session** — SIGTERM, behind a modal confirm. Live rows only.
 
 **View title bar**: search · clear search (appears only while a search is
-active) · `+` new session in this window's folder (it asks which one in a
-multi-root workspace, and falls back to your home directory when no folder is
-open) · refresh · show/hide exited (one toggle, two icons, so the icon shows the
-current state).
+active) · open tabs (see [Searching open tabs](#searching-open-tabs)) · `+` new
+session in this window's folder (it asks which one in a multi-root workspace,
+and falls back to your home directory when no folder is open) · refresh ·
+show/hide exited (one toggle, two icons, so the icon shows the current state).
 
 ## Opening a session that is running somewhere else
 
@@ -180,6 +180,29 @@ name when it has no title yet).
 
 The query is transient: it dies with the window and is never written to settings.
 
+## Searching open tabs
+
+The windows button in the view title opens **Search Open Tabs**: a
+searchable list of everything this window currently has open, grouped by what it
+is — Claude Sessions, Files, Diffs, Notebooks, Terminals, Views, Other. Matching
+covers the tab name, its folder, and its full path. Pick a row to jump to it.
+
+- **Claude session terminals are listed separately from ordinary terminals.**
+  A terminal is recognized as a session by resolving each live session's process
+  to the terminal hosting it, so the row carries the same title the tree shows,
+  plus its working directory.
+- **Terminals in the panel are listed too**, marked `panel`, even though VS Code
+  does not treat them as tabs.
+- **The close button on a row closes that tab** and leaves the list open, so
+  clearing out a cluttered window is one pass. Dirty files still get VS Code's
+  own save prompt.
+- **Claude session rows have no close button** on purpose: closing that terminal
+  kills a running agent. Use **Stop Session** on the tree row, which confirms
+  first.
+- A webview tab (the Settings editor, a transcript viewer) is listed but cannot
+  be focused — VS Code exposes no API for it, and the row says so rather than
+  failing silently.
+
 ## Past sessions
 
 Turn on `sessionRail.showExited` to include sessions that are no longer running,
@@ -220,6 +243,7 @@ view. It hides itself when nothing is live.
 | `sessionRail.groupBy` | `cwd` \| `gitRoot` | `"cwd"` | Group projects by working directory, or by git repository root (folding subdirectory sessions into their repo). |
 | `sessionRail.terminalLocation` | `editor` \| `panel` | `"editor"` | Where a terminal that Session Rail opens appears. A session already running in this window is focused where it is. |
 | `sessionRail.openLiveSession` | `ask` \| `adopt` \| `fork` | `"ask"` | What to do when you open a session that is live in a terminal this window cannot see. `adopt` stops it and resumes under the same id; `fork` leaves it alone and continues under a new id. |
+| `sessionRail.copyIgnoredToWorktree` | boolean | `true` | When creating a worktree session, copy the repository's git-ignored files (`.env`, `node_modules/`, local config) into the new worktree. A worktree checks out tracked content only, so without this a session in it cannot build or run until you put those files there by hand. Turn it off if your repository ignores something large you would rather not duplicate. |
 | `sessionRail.claudeHome` | string | `""` | Overrides the location of `~/.claude`. Mainly for testing; leave empty for the default. |
 
 ## Troubleshooting
@@ -242,11 +266,18 @@ match. Please open an issue with the version.
 
 Nothing under `~/.claude` — no writes, no moves, no deletes. The one thing it
 stores is your list of pinned folders, in VS Code's own per-machine extension
-storage. Three actions have effects outside it, all user-initiated:
+storage. Four actions have effects outside it, all user-initiated:
 
 - **Stop Session** sends SIGTERM to the session's process (modal confirm first).
 - **New Session Here** / **New Session in Workspace Folder** open a terminal and
   run `claude` in it — that process writes its own state, as any session does.
+- **New Worktree Session** runs `git worktree add`, which creates the worktree
+  directory under VS Code's per-machine extension storage — outside every repo,
+  so nothing appears in your checkout. Unless
+  `sessionRail.copyIgnoredToWorktree` is off, the repository's git-ignored files
+  are then copied into it; a file already present in the worktree is never
+  overwritten. **Remove Worktree** deletes that directory after a modal confirm,
+  and never deletes the branch.
 - **Show in Explorer** appends a workspace folder, which VS Code persists to your
   `.code-workspace` (or an untitled workspace). It is **add-only** — it never
   removes a root you arranged by hand, and it asks first for your home directory

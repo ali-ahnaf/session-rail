@@ -34,7 +34,9 @@ import { disposeSearch, promptSearch } from './tree/search';
 import { log } from './util/log';
 import { showInExplorer } from './workspace/explorer';
 import { createScratchpad } from './workspace/scratchpad';
+import { showTabSearch } from './workspace/tabs';
 import {
+  copyIgnoredFiles,
   createWorktree,
   gitRootOf,
   listLocalBranches,
@@ -327,6 +329,11 @@ function registerCommands(
     }),
 
     register('sessionRail.searchSessions', () => promptSearch(provider)),
+
+    // Not a tree filter: the rail shows sessions, this searches the window's
+    // own tabs. It needs the registry only to tell a Claude session's terminal
+    // apart from any other terminal.
+    register('sessionRail.searchTabs', () => showTabSearch(registry)),
     register('sessionRail.clearSearch', () => provider.setFilter('')),
 
     register('sessionRail.showLog', () => log.show()),
@@ -520,6 +527,13 @@ async function newWorktreeSession(dir: string, base: string): Promise<void> {
       if (result.dir === undefined) {
         return;
       }
+      // Before the session, not after: a worktree checks out tracked content
+      // only, so whatever `.gitignore` hides — `.env`, `node_modules/`, local
+      // config — is missing until this runs, and an agent that starts first
+      // fails its first command for a reason that has nothing to do with the
+      // work. Best-effort like the folder add; a copy that fails still leaves
+      // a usable worktree.
+      await seedIgnoredFiles(root, result.dir);
       if (startSession(result.dir, name) === 'missing-dir') {
         void vscode.window.showWarningMessage(
           `Created the worktree but ${result.dir} is not readable. See the Session Rail log.`,
@@ -553,6 +567,47 @@ async function newWorktreeSession(dir: string, base: string): Promise<void> {
           'See the Session Rail log.',
       );
       return;
+  }
+}
+
+/**
+ * Seed a fresh worktree with the ignored files of the repo it came from,
+ * unless `sessionRail.copyIgnoredToWorktree` says not to.
+ *
+ * The copy is shown as a notification with the current entry, because
+ * `node_modules/` is one entry and can take a while — a silent pause between
+ * picking a branch and the terminal opening reads as a hang. It is not
+ * cancellable: half of one collapsed directory is a worse state than either
+ * end, and the whole pass is skippable from settings.
+ */
+async function seedIgnoredFiles(root: string, worktree: string): Promise<void> {
+  if (!copyIgnoredEnabled()) {
+    return;
+  }
+
+  const outcome = await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: `Copying ignored files into ${basename(worktree)}`,
+    },
+    (progress) =>
+      copyIgnoredFiles(root, worktree, (entry) => {
+        progress.report({ message: entry });
+      }),
+  );
+
+  if (outcome.outcome === 'failed') {
+    void vscode.window.showWarningMessage(
+      `Created the worktree but could not list the ignored files of ${basename(root)}` +
+        `${outcome.detail ? `: ${outcome.detail}` : ''}.`,
+    );
+    return;
+  }
+  if (outcome.failed > 0) {
+    void vscode.window.showWarningMessage(
+      `Copied ${outcome.copied} ignored ${outcome.copied === 1 ? 'entry' : 'entries'} into the ` +
+        `worktree; ${outcome.failed} could not be copied. See the Session Rail log.`,
+    );
   }
 }
 
@@ -760,6 +815,14 @@ function syncExitedContext(): void {
   const showing =
     vscode.workspace.getConfiguration(CONFIG_SECTION).get<boolean>('showExited', false) === true;
   void vscode.commands.executeCommand('setContext', 'sessionRail.exitedVisible', showing);
+}
+
+function copyIgnoredEnabled(): boolean {
+  return (
+    vscode.workspace
+      .getConfiguration(CONFIG_SECTION)
+      .get<boolean>('copyIgnoredToWorktree', true) === true
+  );
 }
 
 function applyClaudeHome(): void {

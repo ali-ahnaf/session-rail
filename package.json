@@ -11,7 +11,7 @@
     "agents",
     "subagents"
   ],
-  "version": "0.2.5",
+  "version": "0.2.6",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -37,8 +37,9 @@
     "smoke": "esbuild scripts/smoke.ts --bundle --platform=node --target=node18 --format=cjs --external:vscode --outfile=.smoke.js --log-level=warning && node .smoke.js",
     "check:pins": "esbuild scripts/pins-check.ts --bundle --platform=node --target=node18 --format=cjs --alias:vscode=./scripts/vscode-stub.js --outfile=.pinscheck.js --log-level=warning && node .pinscheck.js",
     "check:sticky": "esbuild scripts/sticky-check.ts --bundle --platform=node --target=node18 --format=cjs --alias:vscode=./scripts/vscode-stub.js --outfile=.stickycheck.js --log-level=warning && node .stickycheck.js",
+    "check:worktree": "esbuild scripts/worktree-check.ts --bundle --platform=node --target=node18 --format=cjs --alias:vscode=./scripts/vscode-stub.js --outfile=.worktreecheck.js --log-level=warning && node .worktreecheck.js",
     "check:registry": "esbuild scripts/registry-check.ts --bundle --platform=node --target=node18 --format=cjs --alias:vscode=./scripts/vscode-stub.js --outfile=.regcheck.js --log-level=warning && node .regcheck.js",
-    "verify": "npm run typecheck && npm run lint && npm run smoke && npm run check:pins && npm run check:registry && npm run check:sticky && npm run build"
+    "verify": "npm run typecheck && npm run lint && npm run smoke && npm run check:pins && npm run check:worktree && npm run check:registry && npm run check:sticky && npm run build"
   },
   "devDependencies": {
     "@types/vscode": "^1.90.0",
@@ -180,6 +181,12 @@
         "icon": "$(clear-all)"
       },
       {
+        "command": "sessionRail.searchTabs",
+        "title": "Search Open Tabs",
+        "category": "Session Rail",
+        "icon": "$(multiple-windows)"
+      },
+      {
         "command": "sessionRail.showLog",
         "title": "Show Log",
         "category": "Session Rail"
@@ -198,24 +205,29 @@
           "group": "navigation@1"
         },
         {
-          "command": "sessionRail.newSessionHome",
+          "command": "sessionRail.searchTabs",
           "when": "view == sessionRail.tree",
           "group": "navigation@2"
         },
         {
-          "command": "sessionRail.refresh",
+          "command": "sessionRail.newSessionHome",
           "when": "view == sessionRail.tree",
           "group": "navigation@3"
         },
         {
+          "command": "sessionRail.refresh",
+          "when": "view == sessionRail.tree",
+          "group": "navigation@4"
+        },
+        {
           "command": "sessionRail.showExited",
           "when": "view == sessionRail.tree && !sessionRail.exitedVisible",
-          "group": "navigation@4"
+          "group": "navigation@5"
         },
         {
           "command": "sessionRail.hideExited",
           "when": "view == sessionRail.tree && sessionRail.exitedVisible",
-          "group": "navigation@4"
+          "group": "navigation@5"
         }
       ],
       "view/item/context": [
@@ -424,6 +436,11 @@
           ],
           "default": "ask",
           "description": "What to do when you open a session that is live in a terminal this window cannot see. Two processes cannot share one transcript, so the old one is either stopped or left running with a fork. Only applies to live sessions with no terminal here; exited sessions always resume in place."
+        },
+        "sessionRail.copyIgnoredToWorktree": {
+          "type": "boolean",
+          "default": true,
+          "description": "When creating a worktree session, copy the repository's git-ignored files (.env files, node_modules, local config) into the new worktree. A worktree checks out tracked content only, so without this a session in it cannot build or run until those files are put there by hand. Turn off if your repository ignores something large you would rather not duplicate."
         },
         "sessionRail.claudeHome": {
           "type": "string",

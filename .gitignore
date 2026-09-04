@@ -6,3 +6,4 @@ dist/
 .regcheck.js
 .pinscheck.js
 .stickycheck.js
+.worktreecheck.js
